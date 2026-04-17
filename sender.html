@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Zer0send - Receive Files</title>
+    <title>Zer0send - Secure File Sharing</title>
     <link rel="stylesheet" href="style.css">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -11,89 +11,103 @@
     <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;700;900&family=Share+Tech+Mono&display=swap" rel="stylesheet">
 
     <style>
-    /* ── Passphrase Gate Modal (shown after connect if passphrase was set) ── */
-    #passphrase-gate {
-        display: none;
-        position: fixed; inset: 0; z-index: 9999;
-        background: rgba(2,10,3,0.92);
-        backdrop-filter: blur(6px);
-        align-items: center; justify-content: center;
+    /* ── Passphrase Accordion (optional second auth factor) ───── */
+    .mk-accordion {
+        margin-top: 1rem;
+        border: 1px solid rgba(64,194,28,0.2);
+        border-radius: 10px;
+        overflow: hidden;
+        transition: border-color 0.2s;
     }
-    #passphrase-gate.active { display: flex; animation: pgFadeIn 0.35s ease; }
-    .pg-card {
-        background: #071409;
-        border: 1px solid rgba(64,194,28,0.5);
-        border-radius: 16px;
-        padding: 2rem 2rem 1.75rem;
-        width: min(380px, 92vw);
-        display: flex; flex-direction: column; gap: 0;
-        box-shadow: 0 0 60px rgba(64,194,28,0.12), 0 20px 60px rgba(0,0,0,0.8);
+    .mk-accordion.applied { border-color: rgba(64,194,28,0.6); }
+    .mk-toggle {
+        width: 100%; background: rgba(6,26,8,0.75); border: none; cursor: pointer;
+        padding: 0.75rem 1rem; display: flex; align-items: center; gap: 0.55rem;
+        font-family: 'Share Tech Mono', monospace; font-size: 0.76rem; color: rgba(64,194,28,0.65);
+        letter-spacing: 1px; text-transform: uppercase; transition: background 0.2s, color 0.2s;
     }
-    .pg-icon {
-        width: 52px; height: 52px; border-radius: 50%;
-        background: rgba(64,194,28,0.08); border: 1px solid rgba(64,194,28,0.3);
-        display: flex; align-items: center; justify-content: center;
-        font-size: 1.3rem; color: #40c21c; margin: 0 auto 1.25rem;
+    .mk-toggle:hover { background: rgba(64,194,28,0.07); color: #40c21c; }
+    .mk-toggle.applied { color: #40c21c; background: rgba(64,194,28,0.1); }
+    .mk-toggle-icon { margin-left: auto; font-size: 0.7rem; transition: transform 0.25s; }
+    .mk-toggle.open .mk-toggle-icon { transform: rotate(180deg); }
+    .mk-optional-tag { font-size: 0.62rem; color: rgba(64,194,28,0.4); border: 1px solid rgba(64,194,28,0.2); border-radius: 3px; padding: 1px 5px; }
+    .mk-applied-pill {
+        display: none; align-items: center; gap: 4px; margin-left: 6px;
+        font-size: 0.65rem; color: #40c21c; background: rgba(64,194,28,0.12);
+        border: 1px solid rgba(64,194,28,0.3); border-radius: 10px; padding: 1px 8px;
     }
-    .pg-title {
-        font-family: 'Share Tech Mono', monospace; font-size: 1rem;
-        color: #40c21c; text-align: center; letter-spacing: 1.5px;
-        text-transform: uppercase; margin-bottom: 0.35rem;
+    .mk-accordion.applied .mk-applied-pill { display: inline-flex; }
+    .mk-body {
+        max-height: 0; overflow: hidden;
+        transition: max-height 0.3s cubic-bezier(0.4,0,0.2,1), padding 0.3s;
+        background: rgba(6,26,8,0.92); padding: 0 1rem;
     }
-    .pg-sub {
-        font-size: 0.78rem; color: rgba(132,241,99,0.55);
-        text-align: center; line-height: 1.6; margin-bottom: 1.4rem;
+    .mk-body.open { max-height: 220px; padding: 0.85rem 1rem 1rem; }
+    #mk-input-field {
+        width: 100%; background: rgba(0,0,0,0.45); border: 1px solid rgba(64,194,28,0.28);
+        border-radius: 7px; color: #84f163; font-family: 'Share Tech Mono', monospace;
+        font-size: 0.82rem; padding: 0.6rem 0.85rem; outline: none; transition: border-color 0.2s;
+        letter-spacing: 0.5px; margin-bottom: 0.65rem;
     }
-    #pg-input {
-        width: 100%; background: rgba(0,0,0,0.55);
-        border: 1px solid rgba(64,194,28,0.3);
-        border-radius: 8px; color: #84f163;
-        font-family: 'Share Tech Mono', monospace; font-size: 0.88rem;
-        padding: 0.75rem 1rem; outline: none; transition: border-color 0.2s, box-shadow 0.2s;
-        letter-spacing: 0.5px; margin-bottom: 0.9rem; text-align: center;
+    #mk-input-field:focus { border-color: rgba(64,194,28,0.6); box-shadow: 0 0 10px rgba(64,194,28,0.12); }
+    #mk-input-field::placeholder { color: rgba(64,194,28,0.22); font-size: 0.75rem; }
+    .mk-row { display: flex; gap: 0.5rem; align-items: center; margin-bottom: 0.6rem; }
+    .mk-apply-btn {
+        background: rgba(64,194,28,0.12); border: 1px solid rgba(64,194,28,0.4);
+        color: #40c21c; border-radius: 7px; padding: 0.55rem 1rem; cursor: pointer;
+        font-family: 'Share Tech Mono', monospace; font-size: 0.76rem; white-space: nowrap;
+        transition: all 0.2s; letter-spacing: 0.5px;
     }
-    #pg-input:focus { border-color: rgba(64,194,28,0.65); box-shadow: 0 0 14px rgba(64,194,28,0.15); }
-    #pg-input::placeholder { color: rgba(64,194,28,0.2); font-size: 0.78rem; letter-spacing: 0; }
-    #pg-input.shake { animation: pgShake 0.4s ease; }
-    .pg-btn {
-        width: 100%; background: rgba(64,194,28,0.14);
-        border: 1px solid rgba(64,194,28,0.45);
-        border-radius: 8px; color: #40c21c; cursor: pointer;
-        font-family: 'Share Tech Mono', monospace; font-size: 0.82rem;
-        padding: 0.75rem; letter-spacing: 1px; text-transform: uppercase;
-        transition: all 0.2s;
+    .mk-apply-btn:hover { background: rgba(64,194,28,0.22); }
+    .mk-apply-btn.success { background: rgba(64,194,28,0.25); border-color: #40c21c; color: #84f163; }
+    .mk-clear-btn {
+        background: transparent; border: 1px solid rgba(239,68,68,0.3);
+        color: rgba(239,68,68,0.6); border-radius: 7px; padding: 0.55rem 0.75rem; cursor: pointer;
+        font-family: 'Share Tech Mono', monospace; font-size: 0.74rem; transition: all 0.2s;
     }
-    .pg-btn:hover { background: rgba(64,194,28,0.25); border-color: #40c21c; }
-    .pg-btn.success { background: rgba(64,194,28,0.3); border-color: #40c21c; color: #84f163; }
-    #pg-error {
-        font-size: 0.72rem; color: #ef4444; text-align: center; min-height: 1rem;
-        font-family: 'Share Tech Mono', monospace; margin-top: 0.6rem; letter-spacing: 0.5px;
-    }
-    .pg-attempts { font-size: 0.68rem; color: rgba(239,68,68,0.55); text-align: center; margin-top: 0.4rem; }
+    .mk-clear-btn:hover { border-color: rgba(239,68,68,0.7); color: #ef4444; }
+    .mk-note { font-size: 0.69rem; color: rgba(132,241,99,0.6); line-height: 1.5; }
+    .mk-note i { color: #f59e0b; margin-right: 4px; }
+    .mk-set-status { font-size: 0.71rem; font-family: 'Share Tech Mono', monospace; min-height: 1rem; margin-top: 0.4rem; }
+    .mk-set-status.ok  { color: #40c21c; }
+    .mk-set-status.err { color: #ef4444; }
 
-    @keyframes pgFadeIn { from { opacity:0; transform:scale(0.96); } to { opacity:1; transform:scale(1); } }
-    @keyframes pgShake {
-        0%,100% { transform: translateX(0); }
-        20%      { transform: translateX(-8px); }
-        40%      { transform: translateX(8px); }
-        60%      { transform: translateX(-5px); }
-        80%      { transform: translateX(5px); }
+    /* ── Expiry Selector ──────────────────────────────────────── */
+    .expiry-selector {
+        margin-top: 1rem;
+        background: rgba(6,26,8,0.7);
+        border: 1px solid rgba(64,194,28,0.2);
+        border-radius: 10px;
+        padding: 0.85rem 1rem;
     }
+    .expiry-label-hdr { display:block; font-family:'Share Tech Mono',monospace; font-size:0.75rem; color:#40c21c; margin-bottom:0.65rem; letter-spacing:1px; }
+    .expiry-options { display:flex; gap:0.7rem; flex-wrap:wrap; }
+    .expiry-opt {
+        flex:1; min-width:70px;
+        display:flex; align-items:center; justify-content:center;
+        border:1px solid rgba(64,194,28,0.25); border-radius:7px;
+        padding:0.55rem 0.5rem; cursor:pointer; transition:all 0.2s;
+        font-family:'Share Tech Mono',monospace; font-size:0.78rem; color:var(--text-secondary);
+    }
+    .expiry-opt:has(input:checked) { border-color:#40c21c; color:#40c21c; background:rgba(64,194,28,0.1); }
+    .expiry-opt input { display:none; }
+    .expiry-opt span { pointer-events:none; }
 
-    /* ── Expiry Band ──────────────────────────────────────────── */
-    #expiry-band {
+    /* ── Expiry Live Badge ────────────────────────────────────── */
+    .expiry-live-badge {
         display:none; align-items:center; gap:0.6rem; flex-wrap:wrap;
-        margin-top:0.75rem; padding:0.55rem 0.9rem;
+        margin-top:0.9rem; padding:0.6rem 1rem;
         background:rgba(239,68,68,0.08); border:1px solid rgba(239,68,68,0.3);
-        border-radius:8px; font-family:'Share Tech Mono',monospace; font-size:0.73rem;
-        color:#fca5a5;
+        border-radius:8px; font-family:'Share Tech Mono',monospace; font-size:0.75rem;
+        color:#fca5a5; animation:fadeIn 0.4s ease;
     }
-    #expiry-band i { color:#ef4444; }
-    #expiry-countdown { font-size:0.9rem; font-weight:bold; min-width:72px; margin-left:auto; }
+    .expiry-live-badge i { color:#ef4444; }
+    .expiry-countdown-wrap { margin-left:auto; display:flex; align-items:center; gap:0.4rem; }
+    #expiry-countdown { font-size:0.9rem; font-weight:bold; min-width:72px; }
 
     /* ── Secure Chat Panel ────────────────────────────────────── */
     #chat-toggle-btn {
-        position:fixed; bottom:72px; right:24px; z-index:900;
+        position:fixed; bottom:24px; right:24px; z-index:900;
         width:72px; height:72px; border-radius:18px;
         background:rgba(6,20,8,0.88);
         color:#40c21c; cursor:pointer;
@@ -136,11 +150,13 @@
     .chat-panel-hdr {
         padding:0.75rem 1rem; border-bottom:1px solid rgba(64,194,28,0.15);
         display:flex; align-items:center; gap:0.5rem;
-        font-family:'Share Tech Mono',monospace; font-size:0.75rem; color:#40c21c; letter-spacing:1px;
+        font-family:'Share Tech Mono',monospace; font-size:0.75rem; color:#40c21c;
+        letter-spacing:1px;
     }
     .chat-e2ee-tag {
         margin-left:auto; font-size:0.65rem; background:rgba(64,194,28,0.1);
-        border:1px solid rgba(64,194,28,0.25); border-radius:4px; padding:2px 7px; color:#84f163;
+        border:1px solid rgba(64,194,28,0.25); border-radius:4px;
+        padding:2px 7px; color:#84f163;
     }
     #chat-log {
         flex:1; overflow-y:auto; padding:0.75rem; display:flex;
@@ -149,17 +165,23 @@
     #chat-log::-webkit-scrollbar { width:3px; }
     #chat-log::-webkit-scrollbar-thumb { background:rgba(64,194,28,0.2); border-radius:2px; }
     .chat-msg { display:flex; flex-direction:column; max-width:82%; }
-    .chat-msg.me   { align-self:flex-end;   align-items:flex-end; }
+    .chat-msg.me { align-self:flex-end; align-items:flex-end; }
     .chat-msg.them { align-self:flex-start; align-items:flex-start; }
     .chat-alias { font-size:0.65rem; font-family:'Share Tech Mono',monospace; margin-bottom:3px; opacity:0.6; }
     .chat-msg.me   .chat-alias { color:#40c21c; }
     .chat-msg.them .chat-alias { color:#84f163; }
-    .chat-bubble { padding:0.5rem 0.75rem; border-radius:10px; font-size:0.82rem; line-height:1.5; word-break:break-word; }
+    .chat-bubble {
+        padding:0.5rem 0.75rem; border-radius:10px; font-size:0.82rem;
+        line-height:1.5; word-break:break-word;
+    }
     .chat-msg.me   .chat-bubble { background:rgba(64,194,28,0.15); border:1px solid rgba(64,194,28,0.25); border-radius:10px 3px 10px 10px; color:#c8f5b0; }
     .chat-msg.them .chat-bubble { background:rgba(72,236,200,0.09); border:1px solid rgba(72,236,200,0.2); border-radius:3px 10px 10px 10px; color:#a8f0e8; }
     .chat-time { font-size:0.6rem; font-family:'Share Tech Mono',monospace; color:rgba(64,194,28,0.35); margin-top:3px; }
     .chat-empty { text-align:center; color:rgba(64,194,28,0.3); font-family:'Share Tech Mono',monospace; font-size:0.72rem; padding:1.5rem; }
-    .chat-input-row { padding:0.6rem 0.75rem; border-top:1px solid rgba(64,194,28,0.12); display:flex; gap:0.5rem; }
+    .chat-input-row {
+        padding:0.6rem 0.75rem; border-top:1px solid rgba(64,194,28,0.12);
+        display:flex; gap:0.5rem;
+    }
     #chat-input {
         flex:1; background:rgba(0,0,0,0.4); border:1px solid rgba(64,194,28,0.2);
         border-radius:7px; color:#c8f5b0; font-family:'Share Tech Mono',monospace;
@@ -174,41 +196,84 @@
     }
     .chat-send-btn:hover { background:rgba(64,194,28,0.3); }
 
+    /* ── Expiry countdown in connection status bar ────────────── */
+    .expiry-status-chip {
+        display:inline-flex; align-items:center; gap:0.4rem;
+        font-family:'Share Tech Mono',monospace; font-size:0.72rem;
+        color:#f59e0b; margin-left:0.75rem;
+    }
+
     @keyframes chatPulse { 0%,100%{box-shadow:0 0 18px rgba(64,194,28,.2)} 50%{box-shadow:0 0 32px rgba(64,194,28,.7),0 0 0 6px rgba(64,194,28,.15)} }
     @keyframes fadeIn { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:translateY(0)} }
 
-    /* ── Save File Button ────────────────────────────────────── */
-    .save-file-btn {
-        display: inline-flex; align-items: center; gap: 0.5rem;
-        margin-top: 0.6rem;
-        background: rgba(64,194,28,0.12);
-        border: 1px solid rgba(64,194,28,0.5);
-        color: #40c21c;
+    /* ── Remove File Button ──────────────────────────────────── */
+    .files-list .item { position: relative; }
+    .remove-file-btn {
+        position: absolute; top: 8px; right: 8px;
+        width: 22px; height: 22px;
+        background: rgba(239,68,68,0.12);
+        border: 1px solid rgba(239,68,68,0.35);
+        border-radius: 50%;
+        color: rgba(239,68,68,0.7);
+        cursor: pointer;
+        display: flex; align-items: center; justify-content: center;
+        font-size: 0.6rem;
+        transition: all 0.15s;
+        line-height: 1;
+        padding: 0;
+        z-index: 2;
+    }
+    .remove-file-btn:hover {
+        background: rgba(239,68,68,0.28);
+        border-color: #ef4444;
+        color: #ef4444;
+        transform: scale(1.15);
+    }
+
+    /* ── Folder upload button ────────────────────────────────── */
+    .folder-select-btn {
+        display: inline-flex; align-items: center; gap: 0.4rem;
+        background: rgba(64,194,28,0.08);
+        border: 1px solid rgba(64,194,28,0.3);
+        color: rgba(64,194,28,0.8);
         border-radius: 8px;
-        padding: 0.45rem 1rem;
+        padding: 0.5rem 1rem;
         cursor: pointer;
         font-family: 'Share Tech Mono', monospace;
         font-size: 0.78rem;
-        letter-spacing: 0.5px;
         transition: all 0.18s;
+        margin-top: 0.5rem;
     }
-    .save-file-btn:hover:not(:disabled) {
-        background: rgba(64,194,28,0.25);
+    .folder-select-btn:hover {
+        background: rgba(64,194,28,0.16);
         border-color: #40c21c;
-        box-shadow: 0 0 12px rgba(64,194,28,0.3);
+        color: #40c21c;
     }
-    .save-file-btn.saved {
-        background: rgba(64,194,28,0.08);
-        border-color: rgba(64,194,28,0.25);
-        color: rgba(64,194,28,0.5);
-        cursor: default;
+
+    /* ── Connection dot states ───────────────────────────────── */
+    /* Default / no class → grey; .waiting → yellow; .connected → green; .disconnected → red */
+    .status-indicator .status-dot {
+        background: #6b7280;
+        box-shadow: 0 0 6px rgba(107,114,128,0.5);
     }
-    /* overflow on item so long paths wrap neatly */
-    .files-list .item .filename div div {
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-        max-width: 240px;
+    .status-indicator.waiting .status-dot {
+        background: #f59e0b;
+        box-shadow: 0 0 10px rgba(245,158,11,0.7);
+        animation: dotPulse 1.4s ease-in-out infinite;
+    }
+    .status-indicator.connected .status-dot {
+        background: #40c21c;
+        box-shadow: 0 0 10px rgba(64,194,28,0.8);
+        animation: dotPulse 2s ease-in-out infinite;
+    }
+    .status-indicator.disconnected .status-dot {
+        background: #ef4444;
+        box-shadow: 0 0 10px rgba(239,68,68,0.7);
+        animation: none;
+    }
+    @keyframes dotPulse {
+        0%,100% { opacity:1; transform:scale(1); }
+        50%      { opacity:0.65; transform:scale(1.25); }
     }
     </style>
 
@@ -305,10 +370,10 @@
                                   opacity="0.95"/>
                             
                             <!-- Binary code on paper -->
-                            <text class="binary-scroll binary-1" x="81" y="65" font-family="Courier New, monospace" font-size="5" fill="#5a4a2f" font-weight="bold">01010010</text>
+                            <text class="binary-scroll binary-1" x="81" y="65" font-family="Courier New, monospace" font-size="5" fill="#5a4a2f" font-weight="bold">01010011</text>
                             <text class="binary-scroll binary-2" x="81" y="72" font-family="Courier New, monospace" font-size="5" fill="#5a4a2f" font-weight="bold">01000101</text>
-                            <text class="binary-scroll binary-3" x="81" y="79" font-family="Courier New, monospace" font-size="5" fill="#5a4a2f" font-weight="bold">01000011</text>
-                            <text class="binary-scroll binary-1" x="81" y="86" font-family="Courier New, monospace" font-size="5" fill="#5a4a2f" font-weight="bold">01010110</text>
+                            <text class="binary-scroll binary-3" x="81" y="79" font-family="Courier New, monospace" font-size="5" fill="#5a4a2f" font-weight="bold">01001110</text>
+                            <text class="binary-scroll binary-1" x="81" y="86" font-family="Courier New, monospace" font-size="5" fill="#5a4a2f" font-weight="bold">01000100</text>
                             <text class="binary-scroll binary-2" x="81" y="93" font-family="Courier New, monospace" font-size="5" fill="#5a4a2f" font-weight="bold">01000110</text>
                             
                             <!-- Glass highlights and reflections -->
@@ -355,64 +420,114 @@
                         </g>
                     </svg>
                 </div>
-                 <a href="index.html" style="text-decoration: none;"><span class="logo-text">ZER<span class="pixel-zero">0</span>SEND</span></a>
+                <a href="index.html" style="text-decoration: none;"><span class="logo-text">ZER<span class="pixel-zero">0</span>SEND</span></a>
             </div>
-            <div class="tagline">Receive Files Securely</div>
+            <div class="tagline">Secure P2P File Sharing</div>
         </header>
 
         <!-- Join Screen -->
         <div class="screen join-screen active">
             <div class="form">
                 <div class="welcome-section">
-                    <h1>Receive Files</h1>
-                    <p class="subtitle">Enter the Room ID to connect with sender</p>
+                    <h1>Share Files Securely</h1>
+                    <p class="subtitle">End-to-end encrypted, peer-to-peer file transfer</p>
                     
                     <div class="features">
                         <div class="feature-item">
-                            <i class="fas fa-download"></i>
-                            <span>Save on Demand</span>
+                            <i class="fas fa-lock"></i>
+                            <span>Encrypted</span>
                         </div>
                         <div class="feature-item">
-                            <i class="fas fa-eye-slash"></i>
-                            <span>No Tracking</span>
+                            <i class="fas fa-bolt"></i>
+                            <span>Fast</span>
                         </div>
                         <div class="feature-item">
-                            <i class="fas fa-user-secret"></i>
-                            <span>Anonymous</span>
+                            <i class="fas fa-shield-alt"></i>
+                            <span>Private</span>
                         </div>
                     </div>
                 </div>
 
                 <div class="form-input">
-                    <label for="join-id">
-                        <i class="fas fa-key"></i>
-                        Room ID
-                    </label>
-                    <input type="text" id="join-id" placeholder="000-000-000" maxlength="11">
-                </div>
-                
-                
-<div class="form-input">
-                    <button id="receiver-start-con-btn" class="primary-btn">
-                        <i class="fas fa-sign-in-alt"></i>
-                        Connect to Room
+                    <button id="sender-start-con-btn" class="primary-btn">
+                        <i class="fas fa-plus-circle"></i>
+                        Create Room
                     </button>
                 </div>
 
+                
+                <!-- ── Link Expiry Selector ────────────────────────────── -->
+                <div class="expiry-selector">
+                  <label class="expiry-label-hdr"><i class="fas fa-fire-alt"></i> Link Self-Destruct Timer</label>
+                  <div class="expiry-options">
+                    <label class="expiry-opt"><input type="radio" name="expiry" value="1"><span>1 Hour</span></label>
+                    <label class="expiry-opt"><input type="radio" name="expiry" value="24" checked><span>24 Hours</span></label>
+                    <label class="expiry-opt"><input type="radio" name="expiry" value="168"><span>7 Days</span></label>
+                  </div>
+                </div>
+
+<div class="form-input room-id-container" id="join-id">
+                </div>
+
+                <!-- ── Passphrase Accordion (optional second auth factor) ── -->
+                <div id="master-key-panel" class="mk-accordion" id="mk-accordion">
+                  <!-- Toggle header -->
+                  <button class="mk-toggle" id="mk-toggle-btn" onclick="togglePassphrase()">
+                    <i class="fas fa-lock"></i>
+                    <span>Add Passphrase</span>
+                    <span class="mk-optional-tag">OPTIONAL</span>
+                    <span class="mk-applied-pill" id="mk-applied-pill">
+                      <i class="fas fa-check-circle"></i> Applied
+                    </span>
+                    <i class="fas fa-chevron-down mk-toggle-icon"></i>
+                  </button>
+                  <!-- Collapsible body -->
+                  <div class="mk-body" id="mk-body">
+                    <input
+                      id="mk-input-field"
+                      type="text"
+                      placeholder="Create a passphrase the receiver must know…"
+                      autocomplete="off"
+                      spellcheck="false"
+                    >
+                    <div class="mk-row">
+                      <button class="mk-apply-btn" id="mk-apply-btn" onclick="applyPassphrase()">
+                        <i class="fas fa-check"></i> Apply
+                      </button>
+                      <button class="mk-clear-btn" id="mk-clear-btn" onclick="clearPassphrase()">
+                        <i class="fas fa-times"></i> Clear
+                      </button>
+                    </div>
+                    <p class="mk-note">
+                      <i class="fas fa-info-circle"></i>
+                      The Room ID establishes the connection. This passphrase is a <b>second authentication</b> step — the receiver will be prompted to enter it before accessing any files. Leave blank to skip.
+                    </p>
+                    <div class="mk-set-status" id="mk-status-text"></div>
+                  </div>
+                </div>
+
+                <!-- ── Expiry live badge ──────────────────────────────── -->
+                <div id="expiry-badge" class="expiry-live-badge" style="display:none;">
+                  <i class="fas fa-fire"></i>
+                  <span id="expiry-label">Self-destructs in …</span>
+                  <span class="expiry-countdown-wrap"><i class="fas fa-hourglass-half"></i><code id="expiry-countdown">—</code></span>
+                </div>
+
+
                 <div class="info-box">
                     <i class="fas fa-info-circle"></i>
-                    <p>Get the Room ID from the sender and enter it above to start receiving files.</p>
+                    <p>Create a room and share the Room ID with someone to start transferring files securely.</p>
                 </div>
             </div>
         </div>
 
-        <!-- File Receiving Screen -->
+        <!-- File Sharing Screen -->
         <div class="screen fs-screen">
             <!-- Connection Status -->
             <div class="connection-status">
-                <div class="status-indicator connected">
+                <div class="status-indicator">
                     <div class="status-dot"></div>
-                    <span id="connection-text">Connected to sender</span>
+                    <span id="connection-text">Waiting for receiver...</span><span class="expiry-status-chip" id="expiry-status-chip" style="display:none;"><i class="fas fa-hourglass-half"></i><code id="expiry-countdown">—</code></span>
                 </div>
                 <button class="disconnect-btn" onclick="location.reload()">
                     <i class="fas fa-times"></i>
@@ -420,27 +535,30 @@
                 </button>
             </div>
 
-            
-            <!-- ── Expiry Band ─────────────────────────────────────── -->
-            <div id="expiry-band">
-                <i class="fas fa-fire"></i>
-                <span id="expiry-label">Session self-destructs in:</span>
-                <code id="expiry-countdown">—</code>
-            </div>
-
-            <!-- Waiting for files -->
-            <div class="waiting-section" id="waiting-section">
-                <div class="waiting-content">
-                    <i class="fas fa-hourglass-half waiting-icon"></i>
-                    <h3>Waiting for files...</h3>
-                    <p>The sender will choose files to share with you</p>
+            <!-- File Upload Area -->
+            <div class="file-input">
+                <div class="upload-area" id="drop-area">
+                    <i class="fas fa-cloud-upload-alt upload-icon"></i>
+                    <h3>Drag & Drop Files Here</h3>
+                    <p>or</p>
+                    <label for="file-input" class="file-select-btn">
+                        <i class="fas fa-folder-open"></i>
+                        Choose Files
+                    </label>
+                    <input type="file" id="file-input" multiple>
+                    <label for="folder-input" class="folder-select-btn">
+                        <i class="fas fa-folder-open"></i>
+                        Upload Folder
+                    </label>
+                    <input type="file" id="folder-input" multiple webkitdirectory style="display:none;">
+                    <p class="file-hint">Any file type · No size limit · Drag folders in</p>
                 </div>
             </div>
 
             <!-- Files List -->
             <div class="files-section">
                 <div class="section-header">
-                    <h3><i class="fas fa-download"></i> Received Files</h3>
+                    <h3><i class="fas fa-file-alt"></i> Shared Files</h3>
                     <span class="file-count" id="file-count">0 files</span>
                 </div>
                 <div class="files-list" id="files-list">
@@ -528,37 +646,11 @@
         </div>
     </div>
 
-
-    <!-- ── Passphrase Gate Modal ─────────────────────────────────── -->
-    <div id="passphrase-gate">
-      <div class="pg-card">
-        <div class="pg-icon"><i class="fas fa-lock"></i></div>
-        <div class="pg-title">Passphrase Required</div>
-        <div class="pg-sub">
-          The sender has protected this session with a passphrase.<br>
-          Enter it below to verify you are the intended recipient.
-        </div>
-        <input
-          id="pg-input"
-          type="password"
-          placeholder="Enter passphrase…"
-          autocomplete="off"
-          spellcheck="false"
-        >
-        <button class="pg-btn" id="pg-submit-btn" onclick="submitPassphraseGate()">
-          <i class="fas fa-unlock-alt"></i>&nbsp; Unlock Session
-        </button>
-        <div id="pg-error"></div>
-        <div class="pg-attempts" id="pg-attempts"></div>
-      </div>
-    </div>
-
     <!-- Toast Notifications -->
     <div id="toast-container"></div>
 
-    <script type="text/javascript" src="https://cdnjs.cloudflare.com/ajax/libs/downloadjs/1.4.1/download.min.js"></script>
     <script type="text/javascript" src="socket.io/socket.io.js"></script>
-    <script type="text/javascript" src="receiver.js"></script>
+    <script type="text/javascript" src="code.js"></script>
     <script>
     /* ── Background Matrix Rain ───────────────────────────────── */
     (function(){
