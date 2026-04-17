@@ -1,0 +1,978 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Zer0send - Secure File Sharing</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;700;900&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+
+    <style>
+    /* ── Passphrase Accordion (optional second auth factor) ───── */
+    .mk-accordion {
+        margin-top: 1rem;
+        border: 1px solid rgba(64,194,28,0.2);
+        border-radius: 10px;
+        overflow: hidden;
+        transition: border-color 0.2s;
+    }
+    .mk-accordion.applied { border-color: rgba(64,194,28,0.6); }
+    .mk-toggle {
+        width: 100%; background: rgba(6,26,8,0.75); border: none; cursor: pointer;
+        padding: 0.75rem 1rem; display: flex; align-items: center; gap: 0.55rem;
+        font-family: 'Share Tech Mono', monospace; font-size: 0.76rem; color: rgba(64,194,28,0.65);
+        letter-spacing: 1px; text-transform: uppercase; transition: background 0.2s, color 0.2s;
+    }
+    .mk-toggle:hover { background: rgba(64,194,28,0.07); color: #40c21c; }
+    .mk-toggle.applied { color: #40c21c; background: rgba(64,194,28,0.1); }
+    .mk-toggle-icon { margin-left: auto; font-size: 0.7rem; transition: transform 0.25s; }
+    .mk-toggle.open .mk-toggle-icon { transform: rotate(180deg); }
+    .mk-optional-tag { font-size: 0.62rem; color: rgba(64,194,28,0.4); border: 1px solid rgba(64,194,28,0.2); border-radius: 3px; padding: 1px 5px; }
+    .mk-applied-pill {
+        display: none; align-items: center; gap: 4px; margin-left: 6px;
+        font-size: 0.65rem; color: #40c21c; background: rgba(64,194,28,0.12);
+        border: 1px solid rgba(64,194,28,0.3); border-radius: 10px; padding: 1px 8px;
+    }
+    .mk-accordion.applied .mk-applied-pill { display: inline-flex; }
+    .mk-body {
+        max-height: 0; overflow: hidden;
+        transition: max-height 0.3s cubic-bezier(0.4,0,0.2,1), padding 0.3s;
+        background: rgba(6,26,8,0.92); padding: 0 1rem;
+    }
+    .mk-body.open { max-height: 220px; padding: 0.85rem 1rem 1rem; }
+    #mk-input-field {
+        width: 100%; background: rgba(0,0,0,0.45); border: 1px solid rgba(64,194,28,0.28);
+        border-radius: 7px; color: #84f163; font-family: 'Share Tech Mono', monospace;
+        font-size: 0.82rem; padding: 0.6rem 0.85rem; outline: none; transition: border-color 0.2s;
+        letter-spacing: 0.5px; margin-bottom: 0.65rem;
+    }
+    #mk-input-field:focus { border-color: rgba(64,194,28,0.6); box-shadow: 0 0 10px rgba(64,194,28,0.12); }
+    #mk-input-field::placeholder { color: rgba(64,194,28,0.22); font-size: 0.75rem; }
+    .mk-row { display: flex; gap: 0.5rem; align-items: center; margin-bottom: 0.6rem; }
+    .mk-apply-btn {
+        background: rgba(64,194,28,0.12); border: 1px solid rgba(64,194,28,0.4);
+        color: #40c21c; border-radius: 7px; padding: 0.55rem 1rem; cursor: pointer;
+        font-family: 'Share Tech Mono', monospace; font-size: 0.76rem; white-space: nowrap;
+        transition: all 0.2s; letter-spacing: 0.5px;
+    }
+    .mk-apply-btn:hover { background: rgba(64,194,28,0.22); }
+    .mk-apply-btn.success { background: rgba(64,194,28,0.25); border-color: #40c21c; color: #84f163; }
+    .mk-clear-btn {
+        background: transparent; border: 1px solid rgba(239,68,68,0.3);
+        color: rgba(239,68,68,0.6); border-radius: 7px; padding: 0.55rem 0.75rem; cursor: pointer;
+        font-family: 'Share Tech Mono', monospace; font-size: 0.74rem; transition: all 0.2s;
+    }
+    .mk-clear-btn:hover { border-color: rgba(239,68,68,0.7); color: #ef4444; }
+    .mk-note { font-size: 0.69rem; color: rgba(132,241,99,0.6); line-height: 1.5; }
+    .mk-note i { color: #f59e0b; margin-right: 4px; }
+    .mk-set-status { font-size: 0.71rem; font-family: 'Share Tech Mono', monospace; min-height: 1rem; margin-top: 0.4rem; }
+    .mk-set-status.ok  { color: #40c21c; }
+    .mk-set-status.err { color: #ef4444; }
+
+    /* ── Expiry Selector ──────────────────────────────────────── */
+    .expiry-selector {
+        margin-top: 1rem;
+        background: rgba(6,26,8,0.7);
+        border: 1px solid rgba(64,194,28,0.2);
+        border-radius: 10px;
+        padding: 0.85rem 1rem;
+    }
+    .expiry-label-hdr { display:block; font-family:'Share Tech Mono',monospace; font-size:0.75rem; color:#40c21c; margin-bottom:0.65rem; letter-spacing:1px; }
+    .expiry-options { display:flex; gap:0.7rem; flex-wrap:wrap; }
+    .expiry-opt {
+        flex:1; min-width:70px;
+        display:flex; align-items:center; justify-content:center;
+        border:1px solid rgba(64,194,28,0.25); border-radius:7px;
+        padding:0.55rem 0.5rem; cursor:pointer; transition:all 0.2s;
+        font-family:'Share Tech Mono',monospace; font-size:0.78rem; color:var(--text-secondary);
+    }
+    .expiry-opt:has(input:checked) { border-color:#40c21c; color:#40c21c; background:rgba(64,194,28,0.1); }
+    .expiry-opt input { display:none; }
+    .expiry-opt span { pointer-events:none; }
+
+    /* ── Expiry Live Badge ────────────────────────────────────── */
+    .expiry-live-badge {
+        display:none; align-items:center; gap:0.6rem; flex-wrap:wrap;
+        margin-top:0.9rem; padding:0.6rem 1rem;
+        background:rgba(239,68,68,0.08); border:1px solid rgba(239,68,68,0.3);
+        border-radius:8px; font-family:'Share Tech Mono',monospace; font-size:0.75rem;
+        color:#fca5a5; animation:fadeIn 0.4s ease;
+    }
+    .expiry-live-badge i { color:#ef4444; }
+    .expiry-countdown-wrap { margin-left:auto; display:flex; align-items:center; gap:0.4rem; }
+    #expiry-countdown { font-size:0.9rem; font-weight:bold; min-width:72px; }
+
+    /* ── Secure Chat Panel ────────────────────────────────────── */
+    #chat-toggle-btn {
+        position:fixed; bottom:24px; right:24px; z-index:900;
+        width:72px; height:72px; border-radius:18px;
+        background:rgba(6,20,8,0.88);
+        color:#40c21c; cursor:pointer;
+        display:flex; align-items:center; justify-content:center;
+        transition:all 0.2s; box-shadow:0 0 24px rgba(64,194,28,0.22), 0 4px 16px rgba(0,0,0,0.5);
+        padding:0; overflow:visible; border:none;
+    }
+    #chat-toggle-btn:hover { box-shadow:0 0 36px rgba(64,194,28,0.42), 0 4px 20px rgba(0,0,0,0.6); transform:scale(1.07); }
+    #chat-toggle-btn.active { background:rgba(64,194,28,0.14); }
+    #chat-toggle-btn.pulse { animation:chatPulse 0.6s ease 3; }
+    #chat-badge {
+        display: none;
+        position: absolute; top: -7px; right: -7px;
+        min-width: 20px; height: 20px;
+        background: #ef4444; color: #fff;
+        border: 2px solid #071409;
+        border-radius: 10px;
+        font-size: 0.65rem; font-weight: 700;
+        font-family: 'Share Tech Mono', monospace;
+        line-height: 16px; text-align: center;
+        padding: 0 5px;
+        pointer-events: none;
+        z-index: 10;
+        animation: badgePop 0.25s cubic-bezier(0.34,1.56,0.64,1);
+        box-shadow: 0 2px 8px rgba(239,68,68,0.6);
+    }
+    #chat-badge.visible { display: block; }
+    @keyframes badgePop { from { transform: scale(0); opacity:0; } to { transform: scale(1); opacity:1; } }
+
+    #chat-panel {
+        position:fixed; bottom:90px; right:24px; z-index:899;
+        width:320px; max-height:420px;
+        background:#071409; border:1px solid rgba(64,194,28,0.35);
+        border-radius:14px; display:flex; flex-direction:column;
+        box-shadow:0 8px 40px rgba(0,0,0,0.7);
+        transform:translateY(20px) scale(0.95); opacity:0;
+        pointer-events:none; transition:all 0.25s cubic-bezier(.4,0,.2,1);
+    }
+    #chat-panel.open { transform:translateY(0) scale(1); opacity:1; pointer-events:all; }
+    .chat-panel-hdr {
+        padding:0.75rem 1rem; border-bottom:1px solid rgba(64,194,28,0.15);
+        display:flex; align-items:center; gap:0.5rem;
+        font-family:'Share Tech Mono',monospace; font-size:0.75rem; color:#40c21c;
+        letter-spacing:1px;
+    }
+    .chat-e2ee-tag {
+        margin-left:auto; font-size:0.65rem; background:rgba(64,194,28,0.1);
+        border:1px solid rgba(64,194,28,0.25); border-radius:4px;
+        padding:2px 7px; color:#84f163;
+    }
+    #chat-log {
+        flex:1; overflow-y:auto; padding:0.75rem; display:flex;
+        flex-direction:column; gap:0.5rem; min-height:220px; max-height:270px;
+    }
+    #chat-log::-webkit-scrollbar { width:3px; }
+    #chat-log::-webkit-scrollbar-thumb { background:rgba(64,194,28,0.2); border-radius:2px; }
+    .chat-msg { display:flex; flex-direction:column; max-width:82%; }
+    .chat-msg.me { align-self:flex-end; align-items:flex-end; }
+    .chat-msg.them { align-self:flex-start; align-items:flex-start; }
+    .chat-alias { font-size:0.65rem; font-family:'Share Tech Mono',monospace; margin-bottom:3px; opacity:0.6; }
+    .chat-msg.me   .chat-alias { color:#40c21c; }
+    .chat-msg.them .chat-alias { color:#84f163; }
+    .chat-bubble {
+        padding:0.5rem 0.75rem; border-radius:10px; font-size:0.82rem;
+        line-height:1.5; word-break:break-word;
+    }
+    .chat-msg.me   .chat-bubble { background:rgba(64,194,28,0.15); border:1px solid rgba(64,194,28,0.25); border-radius:10px 3px 10px 10px; color:#c8f5b0; }
+    .chat-msg.them .chat-bubble { background:rgba(72,236,200,0.09); border:1px solid rgba(72,236,200,0.2); border-radius:3px 10px 10px 10px; color:#a8f0e8; }
+    .chat-time { font-size:0.6rem; font-family:'Share Tech Mono',monospace; color:rgba(64,194,28,0.35); margin-top:3px; }
+    .chat-empty { text-align:center; color:rgba(64,194,28,0.3); font-family:'Share Tech Mono',monospace; font-size:0.72rem; padding:1.5rem; }
+    .chat-input-row {
+        padding:0.6rem 0.75rem; border-top:1px solid rgba(64,194,28,0.12);
+        display:flex; gap:0.5rem;
+    }
+    #chat-input {
+        flex:1; background:rgba(0,0,0,0.4); border:1px solid rgba(64,194,28,0.2);
+        border-radius:7px; color:#c8f5b0; font-family:'Share Tech Mono',monospace;
+        font-size:0.78rem; padding:0.5rem 0.7rem; outline:none; transition:border-color 0.2s;
+    }
+    #chat-input:focus { border-color:rgba(64,194,28,0.5); }
+    #chat-input::placeholder { color:rgba(64,194,28,0.25); }
+    .chat-send-btn {
+        background:rgba(64,194,28,0.15); border:1px solid rgba(64,194,28,0.35);
+        color:#40c21c; border-radius:7px; padding:0.5rem 0.75rem; cursor:pointer;
+        font-size:0.85rem; transition:all 0.15s;
+    }
+    .chat-send-btn:hover { background:rgba(64,194,28,0.3); }
+
+    /* ── Expiry countdown in connection status bar ────────────── */
+    .expiry-status-chip {
+        display:inline-flex; align-items:center; gap:0.4rem;
+        font-family:'Share Tech Mono',monospace; font-size:0.72rem;
+        color:#f59e0b; margin-left:0.75rem;
+    }
+
+    @keyframes chatPulse { 0%,100%{box-shadow:0 0 18px rgba(64,194,28,.2)} 50%{box-shadow:0 0 32px rgba(64,194,28,.7),0 0 0 6px rgba(64,194,28,.15)} }
+    @keyframes fadeIn { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:translateY(0)} }
+
+    /* ── Remove File Button ──────────────────────────────────── */
+    .files-list .item { position: relative; }
+    .remove-file-btn {
+        position: absolute; top: 8px; right: 8px;
+        width: 22px; height: 22px;
+        background: rgba(239,68,68,0.12);
+        border: 1px solid rgba(239,68,68,0.35);
+        border-radius: 50%;
+        color: rgba(239,68,68,0.7);
+        cursor: pointer;
+        display: flex; align-items: center; justify-content: center;
+        font-size: 0.6rem;
+        transition: all 0.15s;
+        line-height: 1;
+        padding: 0;
+        z-index: 2;
+    }
+    .remove-file-btn:hover {
+        background: rgba(239,68,68,0.28);
+        border-color: #ef4444;
+        color: #ef4444;
+        transform: scale(1.15);
+    }
+
+    /* ── Folder upload button ────────────────────────────────── */
+    .folder-select-btn {
+        display: inline-flex; align-items: center; gap: 0.4rem;
+        background: rgba(64,194,28,0.08);
+        border: 1px solid rgba(64,194,28,0.3);
+        color: rgba(64,194,28,0.8);
+        border-radius: 8px;
+        padding: 0.5rem 1rem;
+        cursor: pointer;
+        font-family: 'Share Tech Mono', monospace;
+        font-size: 0.78rem;
+        transition: all 0.18s;
+        margin-top: 0.5rem;
+    }
+    .folder-select-btn:hover {
+        background: rgba(64,194,28,0.16);
+        border-color: #40c21c;
+        color: #40c21c;
+    }
+
+    /* ── Connection dot states ───────────────────────────────── */
+    /* Default / no class → grey; .waiting → yellow; .connected → green; .disconnected → red */
+    .status-indicator .status-dot {
+        background: #6b7280;
+        box-shadow: 0 0 6px rgba(107,114,128,0.5);
+    }
+    .status-indicator.waiting .status-dot {
+        background: #f59e0b;
+        box-shadow: 0 0 10px rgba(245,158,11,0.7);
+        animation: dotPulse 1.4s ease-in-out infinite;
+    }
+    .status-indicator.connected .status-dot {
+        background: #40c21c;
+        box-shadow: 0 0 10px rgba(64,194,28,0.8);
+        animation: dotPulse 2s ease-in-out infinite;
+    }
+    .status-indicator.disconnected .status-dot {
+        background: #ef4444;
+        box-shadow: 0 0 10px rgba(239,68,68,0.7);
+        animation: none;
+    }
+    @keyframes dotPulse {
+        0%,100% { opacity:1; transform:scale(1); }
+        50%      { opacity:0.65; transform:scale(1.25); }
+    }
+    </style>
+
+</head>
+<body>
+    <!-- Startup Loading Screen -->
+    <div id="startup-loader">
+        <canvas id="startup-rain"></canvas>
+        <div class="startup-scan"></div>
+        <div class="startup-content">
+            <div class="startup-wordmark">ZER<b>0</b>SEND</div>
+            <div class="startup-bar-wrap">
+                <div class="startup-track"><div class="startup-fill" id="startup-fill"></div></div>
+                <div class="startup-dot-row" id="startup-dots">
+                    <div class="ldot"></div><div class="ldot"></div><div class="ldot"></div>
+                    <div class="ldot"></div><div class="ldot"></div><div class="ldot"></div>
+                    <div class="ldot"></div><div class="ldot"></div><div class="ldot"></div>
+                    <div class="ldot"></div><div class="ldot"></div><div class="ldot"></div>
+                    <div class="ldot"></div><div class="ldot"></div><div class="ldot"></div>
+                    <div class="ldot"></div><div class="ldot"></div><div class="ldot"></div>
+                    <div class="ldot"></div><div class="ldot"></div>
+                </div>
+            </div>
+            <div class="startup-status" id="startup-status">initialising</div>
+        </div>
+    </div>
+
+    <div class="particles"></div>
+    <canvas id="bg-matrix"></canvas>
+    <div class="bg-floats" id="bg-floats"></div>
+    
+    <div class="app">
+        <!-- Header -->
+        <header class="app-header">
+            <div class="logo">
+                <div class="logo-icon-container">
+                    <!-- Floating Glass Bottle -->
+                    <svg class="floating-bottle" viewBox="0 0 200 180" xmlns="http://www.w3.org/2000/svg">
+                        <defs>
+                            <!-- Glass gradient for realistic depth -->
+                            <linearGradient id="glassBody" x1="0%" y1="0%" x2="100%" y2="100%">
+                                <stop offset="0%" style="stop-color:#b8e6f0;stop-opacity:0.7" />
+                                <stop offset="50%" style="stop-color:#7dd3e8;stop-opacity:0.8" />
+                                <stop offset="100%" style="stop-color:#4fc3dc;stop-opacity:0.85" />
+                            </linearGradient>
+                            
+                            <!-- Glass shine gradient -->
+                            <linearGradient id="glassShine" x1="0%" y1="0%" x2="100%" y2="0%">
+                                <stop offset="0%" style="stop-color:#ffffff;stop-opacity:0.6" />
+                                <stop offset="50%" style="stop-color:#ffffff;stop-opacity:0.3" />
+                                <stop offset="100%" style="stop-color:#ffffff;stop-opacity:0" />
+                            </linearGradient>
+                            
+                            <!-- Paper gradient -->
+                            <linearGradient id="paperGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+                                <stop offset="0%" style="stop-color:#f9e4b7;stop-opacity:1" />
+                                <stop offset="100%" style="stop-color:#e8d4a0;stop-opacity:1" />
+                            </linearGradient>
+                        </defs>
+                        
+                        <!-- Bottle Body (tilted) -->
+                        <g transform="rotate(-15 100 70)">
+                            <!-- Main bottle shape -->
+                            <path d="M 70 45 L 70 110 Q 70 120 80 120 L 110 120 Q 120 120 120 110 L 120 45 Q 120 40 115 40 L 75 40 Q 70 40 70 45 Z" 
+                                  fill="url(#glassBody)" 
+                                  stroke="#2d7a8c" 
+                                  stroke-width="2.5"
+                                  opacity="0.9"/>
+                            
+                            <!-- Bottle neck -->
+                            <rect x="85" y="25" width="20" height="18" rx="2" 
+                                  fill="url(#glassBody)" 
+                                  stroke="#2d7a8c" 
+                                  stroke-width="2.5"
+                                  opacity="0.9"/>
+                            
+                            <!-- Cork/Stopper -->
+                            <ellipse cx="95" cy="25" rx="12" ry="6" 
+                                     fill="#4a3728" 
+                                     stroke="#2d2216" 
+                                     stroke-width="2"/>
+                            <ellipse cx="95" cy="22" rx="12" ry="4" 
+                                     fill="#6b4d3a"/>
+                            <rect x="91" y="15" width="8" height="8" rx="2" 
+                                  fill="#6b4d3a" 
+                                  stroke="#4a3728" 
+                                  stroke-width="1.5"/>
+                            
+                            <!-- Paper/Scroll inside bottle -->
+                            <path d="M 80 55 Q 78 55 78 57 L 78 100 Q 78 102 80 102 L 105 102 Q 107 102 107 100 L 107 57 Q 107 55 105 55 Z" 
+                                  fill="url(#paperGrad)" 
+                                  stroke="#c9b17a" 
+                                  stroke-width="1.5"
+                                  opacity="0.95"/>
+                            
+                            <!-- Binary code on paper -->
+                            <text class="binary-scroll binary-1" x="81" y="65" font-family="Courier New, monospace" font-size="5" fill="#5a4a2f" font-weight="bold">01010011</text>
+                            <text class="binary-scroll binary-2" x="81" y="72" font-family="Courier New, monospace" font-size="5" fill="#5a4a2f" font-weight="bold">01000101</text>
+                            <text class="binary-scroll binary-3" x="81" y="79" font-family="Courier New, monospace" font-size="5" fill="#5a4a2f" font-weight="bold">01001110</text>
+                            <text class="binary-scroll binary-1" x="81" y="86" font-family="Courier New, monospace" font-size="5" fill="#5a4a2f" font-weight="bold">01000100</text>
+                            <text class="binary-scroll binary-2" x="81" y="93" font-family="Courier New, monospace" font-size="5" fill="#5a4a2f" font-weight="bold">01000110</text>
+                            
+                            <!-- Glass highlights and reflections -->
+                            <ellipse cx="75" cy="50" rx="8" ry="15" 
+                                     fill="white" 
+                                     opacity="0.4"/>
+                            <ellipse cx="115" cy="70" rx="6" ry="20" 
+                                     fill="white" 
+                                     opacity="0.25"/>
+                            <path d="M 73 55 L 73 105 Q 74 105 74 105 L 74 55 Z" 
+                                  fill="url(#glassShine)"/>
+                            
+                            <!-- Bottom glass shine -->
+                            <ellipse cx="95" cy="115" rx="18" ry="4" 
+                                     fill="white" 
+                                     opacity="0.3"/>
+                        </g>
+                        
+                        <!-- Animated Waves -->
+                        <g class="waves-container">
+                            <!-- Wave 1 (back) -->
+                            <path class="wave wave-1" 
+                                  d="M 0 140 Q 15 135 30 140 T 60 140 T 90 140 T 120 140 T 150 140 T 180 140 T 210 140" 
+                                  fill="none" 
+                                  stroke="rgba(255, 255, 255, 0.6)" 
+                                  stroke-width="3"
+                                  stroke-linecap="round"/>
+                            
+                            <!-- Wave 2 (middle) -->
+                            <path class="wave wave-2" 
+                                  d="M 0 155 Q 15 150 30 155 T 60 155 T 90 155 T 120 155 T 150 155 T 180 155 T 210 155" 
+                                  fill="none" 
+                                  stroke="rgba(255, 255, 255, 0.5)" 
+                                  stroke-width="3"
+                                  stroke-linecap="round"/>
+                            
+                            <!-- Wave 3 (front) -->
+                            <path class="wave wave-3" 
+                                  d="M 0 170 Q 15 165 30 170 T 60 170 T 90 170 T 120 170 T 150 170 T 180 170 T 210 170" 
+                                  fill="none" 
+                                  stroke="rgba(255, 255, 255, 0.4)" 
+                                  stroke-width="3"
+                                  stroke-linecap="round"/>
+                        </g>
+                    </svg>
+                </div>
+                <span class="logo-text">
+                    ZER<span class="pixel-zero">0</span>SEND
+                </span>
+            </div>
+            <div class="tagline">Secure P2P File Sharing</div>
+        </header>
+
+        <!-- Join Screen -->
+        <div class="screen join-screen active">
+            <div class="form">
+                <div class="welcome-section">
+                    <h1>Share Files Securely</h1>
+                    <p class="subtitle">End-to-end encrypted, peer-to-peer file transfer</p>
+                    
+                    <div class="features">
+                        <div class="feature-item">
+                            <i class="fas fa-lock"></i>
+                            <span>Encrypted</span>
+                        </div>
+                        <div class="feature-item">
+                            <i class="fas fa-bolt"></i>
+                            <span>Fast</span>
+                        </div>
+                        <div class="feature-item">
+                            <i class="fas fa-shield-alt"></i>
+                            <span>Private</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="form-input">
+                    <button id="sender-start-con-btn" class="primary-btn">
+                        <i class="fas fa-plus-circle"></i>
+                        Create Room
+                    </button>
+                </div>
+
+                
+                <!-- ── Link Expiry Selector ────────────────────────────── -->
+                <div class="expiry-selector">
+                  <label class="expiry-label-hdr"><i class="fas fa-fire-alt"></i> Link Self-Destruct Timer</label>
+                  <div class="expiry-options">
+                    <label class="expiry-opt"><input type="radio" name="expiry" value="1"><span>1 Hour</span></label>
+                    <label class="expiry-opt"><input type="radio" name="expiry" value="24" checked><span>24 Hours</span></label>
+                    <label class="expiry-opt"><input type="radio" name="expiry" value="168"><span>7 Days</span></label>
+                  </div>
+                </div>
+
+<div class="form-input room-id-container" id="join-id">
+                </div>
+
+                <!-- ── Passphrase Accordion (optional second auth factor) ── -->
+                <div id="master-key-panel" class="mk-accordion" id="mk-accordion">
+                  <!-- Toggle header -->
+                  <button class="mk-toggle" id="mk-toggle-btn" onclick="togglePassphrase()">
+                    <i class="fas fa-lock"></i>
+                    <span>Add Passphrase</span>
+                    <span class="mk-optional-tag">OPTIONAL</span>
+                    <span class="mk-applied-pill" id="mk-applied-pill">
+                      <i class="fas fa-check-circle"></i> Applied
+                    </span>
+                    <i class="fas fa-chevron-down mk-toggle-icon"></i>
+                  </button>
+                  <!-- Collapsible body -->
+                  <div class="mk-body" id="mk-body">
+                    <input
+                      id="mk-input-field"
+                      type="text"
+                      placeholder="Create a passphrase the receiver must know…"
+                      autocomplete="off"
+                      spellcheck="false"
+                    >
+                    <div class="mk-row">
+                      <button class="mk-apply-btn" id="mk-apply-btn" onclick="applyPassphrase()">
+                        <i class="fas fa-check"></i> Apply
+                      </button>
+                      <button class="mk-clear-btn" id="mk-clear-btn" onclick="clearPassphrase()">
+                        <i class="fas fa-times"></i> Clear
+                      </button>
+                    </div>
+                    <p class="mk-note">
+                      <i class="fas fa-info-circle"></i>
+                      The Room ID establishes the connection. This passphrase is a <b>second authentication</b> step — the receiver will be prompted to enter it before accessing any files. Leave blank to skip.
+                    </p>
+                    <div class="mk-set-status" id="mk-status-text"></div>
+                  </div>
+                </div>
+
+                <!-- ── Expiry live badge ──────────────────────────────── -->
+                <div id="expiry-badge" class="expiry-live-badge" style="display:none;">
+                  <i class="fas fa-fire"></i>
+                  <span id="expiry-label">Self-destructs in …</span>
+                  <span class="expiry-countdown-wrap"><i class="fas fa-hourglass-half"></i><code id="expiry-countdown">—</code></span>
+                </div>
+
+
+                <div class="info-box">
+                    <i class="fas fa-info-circle"></i>
+                    <p>Create a room and share the Room ID with someone to start transferring files securely.</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- File Sharing Screen -->
+        <div class="screen fs-screen">
+            <!-- Connection Status -->
+            <div class="connection-status">
+                <div class="status-indicator">
+                    <div class="status-dot"></div>
+                    <span id="connection-text">Waiting for receiver...</span><span class="expiry-status-chip" id="expiry-status-chip" style="display:none;"><i class="fas fa-hourglass-half"></i><code id="expiry-countdown">—</code></span>
+                </div>
+                <button class="disconnect-btn" onclick="location.reload()">
+                    <i class="fas fa-times"></i>
+                    Disconnect
+                </button>
+            </div>
+
+            <!-- File Upload Area -->
+            <div class="file-input">
+                <div class="upload-area" id="drop-area">
+                    <i class="fas fa-cloud-upload-alt upload-icon"></i>
+                    <h3>Drag & Drop Files Here</h3>
+                    <p>or</p>
+                    <label for="file-input" class="file-select-btn">
+                        <i class="fas fa-folder-open"></i>
+                        Choose Files
+                    </label>
+                    <input type="file" id="file-input" multiple>
+                    <label for="folder-input" class="folder-select-btn">
+                        <i class="fas fa-folder-open"></i>
+                        Upload Folder
+                    </label>
+                    <input type="file" id="folder-input" multiple webkitdirectory style="display:none;">
+                    <p class="file-hint">Any file type · No size limit · Drag folders in</p>
+                </div>
+            </div>
+
+            <!-- Files List -->
+            <div class="files-section">
+                <div class="section-header">
+                    <h3><i class="fas fa-file-alt"></i> Shared Files</h3>
+                    <span class="file-count" id="file-count">0 files</span>
+                </div>
+                <div class="files-list" id="files-list">
+                    <!-- Files will be added here dynamically -->
+                </div>
+            </div>
+        </div>
+    </div>
+
+
+    <!-- ── Secure Chat Floating Button ───────────────────────── -->
+    <button id="chat-toggle-btn" onclick="toggleChat()" title="Secure Chat" style="position:relative;">
+        <svg id="chat-bottle-svg" viewBox="0 0 200 180" xmlns="http://www.w3.org/2000/svg" style="width:54px;height:54px;display:block;flex-shrink:0;">
+          <defs>
+            <linearGradient id="btn-glassBody" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%"   style="stop-color:#b8e6f0;stop-opacity:0.8"/>
+              <stop offset="50%"  style="stop-color:#7dd3e8;stop-opacity:0.85"/>
+              <stop offset="100%" style="stop-color:#4fc3dc;stop-opacity:0.9"/>
+            </linearGradient>
+            <linearGradient id="btn-glassShine" x1="0%" y1="0%" x2="100%" y2="0%">
+              <stop offset="0%"   style="stop-color:#ffffff;stop-opacity:0.6"/>
+              <stop offset="50%"  style="stop-color:#ffffff;stop-opacity:0.3"/>
+              <stop offset="100%" style="stop-color:#ffffff;stop-opacity:0"/>
+            </linearGradient>
+            <linearGradient id="btn-paperGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+              <stop offset="0%"   style="stop-color:#f9e4b7;stop-opacity:1"/>
+              <stop offset="100%" style="stop-color:#e8d4a0;stop-opacity:1"/>
+            </linearGradient>
+            <style>
+              @keyframes btnFloat{0%,100%{transform:translateY(0px)}50%{transform:translateY(-4px)}}
+              @keyframes btnBin1{0%,100%{opacity:0.9}40%{opacity:0.4}70%{opacity:1}}
+              @keyframes btnBin2{0%,100%{opacity:0.7}30%{opacity:1}60%{opacity:0.3}}
+              @keyframes btnBin3{0%,100%{opacity:0.5}20%{opacity:1}50%{opacity:0.6}80%{opacity:0.2}}
+              .btn-bottle-body{animation:btnFloat 3s ease-in-out infinite;}
+              .btn-bw1{animation:btnBin1 2.1s ease-in-out infinite;}
+              .btn-bw2{animation:btnBin2 2.7s ease-in-out infinite;}
+              .btn-bw3{animation:btnBin3 1.9s ease-in-out infinite;}
+            </style>
+          </defs>
+          <g class="btn-bottle-body">
+            <g transform="rotate(-15 100 70)">
+              <path d="M 70 45 L 70 110 Q 70 120 80 120 L 110 120 Q 120 120 120 110 L 120 45 Q 120 40 115 40 L 75 40 Q 70 40 70 45 Z" fill="url(#btn-glassBody)" stroke="#2d7a8c" stroke-width="2.5" opacity="0.9"/>
+              <rect x="85" y="25" width="20" height="18" rx="2" fill="url(#btn-glassBody)" stroke="#2d7a8c" stroke-width="2.5" opacity="0.9"/>
+              <ellipse cx="95" cy="25" rx="12" ry="6" fill="#4a3728" stroke="#2d2216" stroke-width="2"/>
+              <ellipse cx="95" cy="22" rx="12" ry="4" fill="#6b4d3a"/>
+              <rect x="91" y="15" width="8" height="8" rx="2" fill="#6b4d3a" stroke="#4a3728" stroke-width="1.5"/>
+              <path d="M 80 55 Q 78 55 78 57 L 78 100 Q 78 102 80 102 L 105 102 Q 107 102 107 100 L 107 57 Q 107 55 105 55 Z" fill="url(#btn-paperGrad)" stroke="#c9b17a" stroke-width="1.5" opacity="0.95"/>
+              <text class="btn-bw1" x="81" y="65" font-family="Courier New,monospace" font-size="5" fill="#5a4a2f" font-weight="bold">01010011</text>
+              <text class="btn-bw2" x="81" y="72" font-family="Courier New,monospace" font-size="5" fill="#5a4a2f" font-weight="bold">01000101</text>
+              <text class="btn-bw3" x="81" y="79" font-family="Courier New,monospace" font-size="5" fill="#5a4a2f" font-weight="bold">01001110</text>
+              <text class="btn-bw1" x="81" y="86" font-family="Courier New,monospace" font-size="5" fill="#5a4a2f" font-weight="bold">01000100</text>
+              <text class="btn-bw2" x="81" y="93" font-family="Courier New,monospace" font-size="5" fill="#5a4a2f" font-weight="bold">01000110</text>
+              <ellipse cx="75" cy="50" rx="8" ry="15" fill="white" opacity="0.4"/>
+              <ellipse cx="115" cy="70" rx="6" ry="20" fill="white" opacity="0.25"/>
+              <path d="M 73 55 L 73 105 Q 74 105 74 105 L 74 55 Z" fill="url(#btn-glassShine)"/>
+              <ellipse cx="95" cy="115" rx="18" ry="4" fill="white" opacity="0.3"/>
+            </g>
+          </g>
+          <path d="M 0 140 Q 15 135 30 140 T 60 140 T 90 140 T 120 140 T 150 140 T 180 140 T 210 140" fill="none" stroke="rgba(255,255,255,0.55)" stroke-width="3" stroke-linecap="round">
+            <animate attributeName="d" dur="2.2s" repeatCount="indefinite" values="M 0 140 Q 15 135 30 140 T 60 140 T 90 140 T 120 140 T 150 140 T 180 140 T 210 140;M 0 142 Q 15 137 30 142 T 60 138 T 90 142 T 120 138 T 150 142 T 180 138 T 210 142;M 0 140 Q 15 135 30 140 T 60 140 T 90 140 T 120 140 T 150 140 T 180 140 T 210 140"/>
+          </path>
+          <path d="M 0 155 Q 15 150 30 155 T 60 155 T 90 155 T 120 155 T 150 155 T 180 155 T 210 155" fill="none" stroke="rgba(255,255,255,0.45)" stroke-width="3" stroke-linecap="round">
+            <animate attributeName="d" dur="2.6s" begin="0.3s" repeatCount="indefinite" values="M 0 155 Q 15 150 30 155 T 60 155 T 90 155 T 120 155 T 150 155 T 180 155 T 210 155;M 0 153 Q 15 158 30 153 T 60 158 T 90 153 T 120 158 T 150 153 T 180 158 T 210 153;M 0 155 Q 15 150 30 155 T 60 155 T 90 155 T 120 155 T 150 155 T 180 155 T 210 155"/>
+          </path>
+          <path d="M 0 170 Q 15 165 30 170 T 60 170 T 90 170 T 120 170 T 150 170 T 180 170 T 210 170" fill="none" stroke="rgba(255,255,255,0.35)" stroke-width="3" stroke-linecap="round">
+            <animate attributeName="d" dur="1.9s" begin="0.6s" repeatCount="indefinite" values="M 0 170 Q 15 165 30 170 T 60 170 T 90 170 T 120 170 T 150 170 T 180 170 T 210 170;M 0 168 Q 15 173 30 168 T 60 173 T 90 168 T 120 173 T 150 168 T 180 173 T 210 168;M 0 170 Q 15 165 30 170 T 60 170 T 90 170 T 120 170 T 150 170 T 180 170 T 210 170"/>
+          </path>
+        </svg>
+        <span id="chat-badge"></span>
+    </button>
+
+    <!-- ── Secure Chat Panel ──────────────────────────────────── -->
+    <div id="chat-panel">
+        <div class="chat-panel-hdr">
+            <i class="fas fa-lock"></i>
+            SECURE CHANNEL
+            <span class="chat-e2ee-tag">E2EE</span>
+        </div>
+        <div id="chat-log">
+            <div class="chat-empty">No messages yet.<br>Session is end-to-end encrypted.</div>
+        </div>
+        <div class="chat-input-row">
+            <input id="chat-input" type="text" placeholder="Type a secure message…" autocomplete="off">
+            <button class="chat-send-btn" onclick="sendChatMessage()"><i class="fas fa-paper-plane"></i></button>
+        </div>
+    </div>
+
+    <!-- Toast Notifications -->
+    <div id="toast-container"></div>
+
+    <script type="text/javascript" src="socket.io/socket.io.js"></script>
+    <script type="text/javascript" src="code.js"></script>
+    <script>
+    /* ── Background Matrix Rain ───────────────────────────────── */
+    (function(){
+        const canvas  = document.getElementById('bg-matrix');
+        const ctx     = canvas.getContext('2d');
+        const palette = ['#40c21c','#57d42e','#84f163','#48ecc8','#1eff00','#2dba16','#3cd426'];
+
+        function resize(){
+            canvas.width  = window.innerWidth;
+            canvas.height = window.innerHeight;
+        }
+        resize();
+        window.addEventListener('resize', resize);
+
+        const COL_W = 20;
+        let drops = [];
+        function initDrops(){
+            const cols = Math.floor(canvas.width / COL_W);
+            drops = Array.from({length: cols}, () => Math.random() * -(canvas.height / 16));
+        }
+        initDrops();
+        window.addEventListener('resize', initDrops);
+
+        function draw(){
+            ctx.fillStyle = 'rgba(6,18,4,0.18)';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            for (let i = 0; i < drops.length; i++){
+                const y = drops[i] * 16;
+                const bit = Math.random() > 0.5 ? '1' : '0';
+                const near_bottom = y > canvas.height * 0.5;
+                const alpha = near_bottom
+                    ? 0.55 + Math.random() * 0.35
+                    : 0.2  + Math.random() * 0.25;
+                ctx.globalAlpha = alpha;
+                ctx.fillStyle   = palette[Math.floor(Math.random() * palette.length)];
+                ctx.font        = (Math.random() > 0.7 ? 15 : 12) + 'px "Share Tech Mono", monospace';
+                ctx.fillText(bit, i * COL_W, y);
+                ctx.globalAlpha = 1;
+
+                if (y > canvas.height && Math.random() > 0.975) drops[i] = 0;
+                drops[i] += 0.28 + Math.random() * 0.22;
+            }
+        }
+        setInterval(draw, 45);
+    })();
+
+    /* ── Floating Binary Strings & Ships ────────────────────── */
+    (function(){
+        var container = document.getElementById('bg-floats');
+        var binStrings = [
+            '01000110','01001001','01001100','01000101',
+            '01010011','01000101','01001110','01000100',
+            '10110100','11001010','01110010','00110101',
+            '11010011','00101100','10101010','01100110',
+        ];
+
+        function shipSVG(w){
+            var h = Math.round(w * 0.72);
+            return '<svg width="'+w+'" height="'+h+'" viewBox="0 0 120 86" xmlns="http://www.w3.org/2000/svg">'
+                + '<path d="M14 52 Q10 70 20 76 L100 76 Q110 70 106 52 Z" fill="#5a3a1a" stroke="#3a2208" stroke-width="1.2"/>'
+                + '<path d="M14 52 L106 52 L100 76 L20 76 Z" fill="#7a4e28"/>'
+                + '<line x1="14" y1="60" x2="106" y2="60" stroke="#5a3a1a" stroke-width="0.8" opacity="0.6"/>'
+                + '<line x1="16" y1="68" x2="104" y2="68" stroke="#5a3a1a" stroke-width="0.8" opacity="0.6"/>'
+                + '<rect x="12" y="46" width="96" height="8" rx="2" fill="#8b5e30" stroke="#5a3a1a" stroke-width="1"/>'
+                + '<circle cx="38" cy="62" r="5" fill="#2d1a08" stroke="#40c21c" stroke-width="1.2"/>'
+                + '<circle cx="38" cy="62" r="3" fill="#1a0f04"/>'
+                + '<circle cx="62" cy="64" r="5" fill="#2d1a08" stroke="#40c21c" stroke-width="1.2"/>'
+                + '<circle cx="62" cy="64" r="3" fill="#1a0f04"/>'
+                + '<circle cx="86" cy="62" r="5" fill="#2d1a08" stroke="#40c21c" stroke-width="1.2"/>'
+                + '<circle cx="86" cy="62" r="3" fill="#1a0f04"/>'
+                + '<rect x="58" y="6" width="3" height="46" rx="1" fill="#6b4a22" stroke="#3a2208" stroke-width="0.8"/>'
+                + '<rect x="32" y="14" width="2.5" height="34" rx="1" fill="#6b4a22" stroke="#3a2208" stroke-width="0.8"/>'
+                + '<path d="M61 8 L96 20 L94 42 L61 42 Z" fill="#e8e8e8" stroke="#555" stroke-width="0.8"/>'
+                + '<line x1="68" y1="9" x2="66" y2="42" stroke="#444" stroke-width="2.5" opacity="0.5"/>'
+                + '<line x1="75" y1="11" x2="73" y2="42" stroke="#444" stroke-width="2.5" opacity="0.5"/>'
+                + '<line x1="82" y1="14" x2="80" y2="42" stroke="#444" stroke-width="2.5" opacity="0.5"/>'
+                + '<line x1="89" y1="17" x2="87" y2="42" stroke="#444" stroke-width="2.5" opacity="0.5"/>'
+                + '<path d="M34.5 16 L60 24 L58 40 L34.5 40 Z" fill="#f0f0e8" stroke="#666" stroke-width="0.7"/>'
+                + '<rect x="51" y="6" width="14" height="9" rx="1" fill="#111" stroke="#333" stroke-width="0.5"/>'
+                + '<circle cx="58" cy="9" r="2.2" fill="#e0e0e0"/>'
+                + '<line x1="55" y1="11" x2="57" y2="13" stroke="#e0e0e0" stroke-width="0.8"/>'
+                + '<line x1="61" y1="11" x2="59" y2="13" stroke="#e0e0e0" stroke-width="0.8"/>'
+                + '<line x1="56" y1="13" x2="60" y2="13" stroke="#e0e0e0" stroke-width="0.8"/>'
+                + '<rect x="28" y="14" width="9" height="6" rx="0.5" fill="#111" stroke="#333" stroke-width="0.5"/>'
+                + '<circle cx="32.5" cy="16.5" r="1.4" fill="#e0e0e0"/>'
+                + '<line x1="12" y1="46" x2="-4" y2="36" stroke="#6b4a22" stroke-width="2.5" stroke-linecap="round"/>'
+                + '<path d="M10 76 Q22 80 34 76 Q46 72 58 76 Q70 80 82 76 Q94 72 110 76" fill="none" stroke="#48ecc8" stroke-width="1.8" stroke-linecap="round" opacity="0.7"/>'
+                + '<path d="M16 79 Q28 83 40 79 Q52 75 64 79 Q76 83 88 79 Q100 75 108 79" fill="none" stroke="#40c21c" stroke-width="1.2" stroke-linecap="round" opacity="0.5"/>'
+                + '</svg>';
+        }
+
+        var binColors = ['rgba(64,194,28,OP)','rgba(132,241,99,OP)','rgba(72,236,200,OP)'];
+        function rand(a,b){ return Math.random()*(b-a)+a; }
+
+        /* ── Binary floats (CSS animated, unchanged) ─────────── */
+        function spawnBinary(){
+            var el = document.createElement('div');
+            el.className = 'float-binary';
+            var rows = Math.floor(rand(2,5)), html = [];
+            for(var r=0;r<rows;r++) html.push(binStrings[Math.floor(Math.random()*binStrings.length)]);
+            el.innerHTML = html.join('<br>');
+            var op = rand(0.08,0.22).toFixed(2);
+            var col = binColors[Math.floor(Math.random()*binColors.length)].replace('OP',op);
+            el.style.cssText = 'left:'+rand(0,95)+'vw;color:'+col+';font-size:'+rand(9,13).toFixed(0)+'px;--dur:'+rand(14,26).toFixed(1)+'s;--delay:-'+rand(0,20).toFixed(1)+'s;--dx:'+rand(-40,40).toFixed(0)+'px;--op:'+op+';line-height:1.6;';
+            container.appendChild(el);
+        }
+
+        /* ── Ship fleet: JS-driven rAF animation ─────────────── */
+        // Each ship is a cubic Bezier path through the viewport.
+        // Position & heading are computed per-frame so the hull
+        // always faces its instantaneous direction of travel.
+
+        var ships = [];
+
+        function randomEdgePoint(margin){
+            // Returns a point just outside one of the 4 edges
+            var m = margin || 120;
+            var W = window.innerWidth, H = window.innerHeight;
+            var edge = Math.floor(Math.random()*4);
+            if(edge===0) return {x: rand(0,W),   y: -m          }; // top
+            if(edge===1) return {x: rand(0,W),   y: H+m         }; // bottom
+            if(edge===2) return {x: -m,           y: rand(0,H)  }; // left
+                         return {x: W+m,          y: rand(0,H)  }; // right
+        }
+
+        function randomInsidePoint(){
+            return {
+                x: rand(0.1,0.9)*window.innerWidth,
+                y: rand(0.1,0.9)*window.innerHeight
+            };
+        }
+
+        function cubicBezier(p0,p1,p2,p3,t){
+            var u=1-t, tt=t*t, uu=u*u;
+            return {
+                x: uu*u*p0.x + 3*uu*t*p1.x + 3*u*tt*p2.x + tt*t*p3.x,
+                y: uu*u*p0.y + 3*uu*t*p1.y + 3*u*tt*p2.y + tt*t*p3.y
+            };
+        }
+
+        // Derivative of cubic Bezier (tangent / velocity direction)
+        function cubicBezierTangent(p0,p1,p2,p3,t){
+            var u=1-t;
+            return {
+                x: 3*(u*u*(p1.x-p0.x) + 2*u*t*(p2.x-p1.x) + t*t*(p3.x-p2.x)),
+                y: 3*(u*u*(p1.y-p0.y) + 2*u*t*(p2.y-p1.y) + t*t*(p3.y-p2.y))
+            };
+        }
+
+        function createShip(){
+            var w   = Math.floor(rand(45,95));
+            var el  = document.createElement('div');
+            el.className = 'float-plane';
+            el.innerHTML = shipSVG(w);
+            el.style.cssText = 'position:fixed;opacity:0;pointer-events:none;will-change:transform;';
+            container.appendChild(el);
+
+            var p0 = randomEdgePoint();
+            var p3 = randomEdgePoint();
+            // Control points: pull them towards random interior areas for natural curves
+            var p1 = { x: p0.x + rand(-300,300) + (p3.x-p0.x)*0.35,
+                       y: p0.y + rand(-300,300) + (p3.y-p0.y)*0.35 };
+            var p2 = { x: p3.x + rand(-300,300) - (p3.x-p0.x)*0.35,
+                       y: p3.y + rand(-300,300) - (p3.y-p0.y)*0.35 };
+
+            var duration = rand(30000, 55000); // ms
+            var delay    = rand(0, 45000);     // stagger so they don't all start together
+            var opacity  = rand(0.18, 0.35);
+            var fadeMs   = 2500; // fade in/out duration
+            var angle    = 0;    // current heading, used for smooth interpolation
+
+            ships.push({
+                el: el, p0:p0, p1:p1, p2:p2, p3:p3,
+                duration: duration, delay: delay, opacity: opacity,
+                startTime: null, angle: angle, w: w,
+                fadeMs: fadeMs, active: true
+            });
+        }
+
+        // Seed initial fleet
+        for(var i=0; i<8; i++) createShip();
+
+        var lastTime = null;
+
+        function tick(now){
+            if(!lastTime) lastTime = now;
+            lastTime = now;
+
+            for(var i=ships.length-1; i>=0; i--){
+                var s = ships[i];
+                if(!s.active) continue;
+
+                // Handle delay
+                if(s.startTime === null){
+                    if(!s._start){ s._start = now; }
+                    if(now - s._start < s.delay) continue;
+                    s.startTime = now;
+                }
+
+                var elapsed = now - s.startTime;
+                var t = elapsed / s.duration;
+
+                if(t > 1){
+                    // Respawn: new path from a random edge
+                    s.el.style.opacity = 0;
+                    var p0 = randomEdgePoint();
+                    var p3 = randomEdgePoint();
+                    s.p0 = p0; s.p3 = p3;
+                    s.p1 = { x: p0.x+rand(-300,300)+(p3.x-p0.x)*0.35, y: p0.y+rand(-300,300)+(p3.y-p0.y)*0.35 };
+                    s.p2 = { x: p3.x+rand(-300,300)-(p3.x-p0.x)*0.35, y: p3.y+rand(-300,300)-(p3.y-p0.y)*0.35 };
+                    s.duration = rand(30000,55000);
+                    s.opacity  = rand(0.18,0.35);
+                    s.startTime = now;
+                    continue;
+                }
+
+                var pos = cubicBezier(s.p0,s.p1,s.p2,s.p3, t);
+                var tan = cubicBezierTangent(s.p0,s.p1,s.p2,s.p3, Math.min(t+0.001,1));
+                var targetAngle = Math.atan2(tan.y, tan.x) * 180 / Math.PI;
+
+                // Smooth angle interpolation (shortest arc)
+                var diff = targetAngle - s.angle;
+                while(diff >  180) diff -= 360;
+                while(diff < -180) diff += 360;
+                s.angle += diff * 0.08; // lag factor — feels like a real ship turning
+
+                // Opacity: fade in at start, fade out at end
+                var fadeT   = s.fadeMs / s.duration;
+                var opacity = s.opacity;
+                if(t < fadeT)       opacity = s.opacity * (t/fadeT);
+                else if(t > 1-fadeT) opacity = s.opacity * ((1-t)/fadeT);
+
+                // Center-offset so rotation pivots at hull midpoint, not top-left
+                var hw = s.w / 2;
+                var hh = Math.round(s.w * 0.72) / 2;
+                // +180 because the SVG bow faces left (negative X axis)
+                var displayAngle = s.angle + 180;
+                s.el.style.opacity = opacity;
+                s.el.style.transform = 'translate('+(pos.x - hw)+'px,'+(pos.y - hh)+'px) rotate('+displayAngle+'deg)';
+            }
+
+            requestAnimationFrame(tick);
+        }
+
+        requestAnimationFrame(tick);
+
+        // Spawn new ships occasionally
+        setInterval(function(){
+            if(ships.length < 12) createShip();
+            // Prune excess DOM
+            if(container.children.length > 80) container.removeChild(container.children[0]);
+        }, 6000);
+
+        /* ── Binary string spawning ──────────────────────────── */
+        for(var b=0; b<18; b++) spawnBinary();
+        setInterval(spawnBinary, 3200);
+        setInterval(function(){
+            if(container.children.length > 80) container.removeChild(container.children[0]);
+        }, 5000);
+    })();
+    </script>
+    <script>
+    /* ── Startup Loader ──────────────────────────────────────── */
+    (function(){
+        const loader   = document.getElementById('startup-loader');
+        const canvas   = document.getElementById('startup-rain');
+        const fillEl   = document.getElementById('startup-fill');
+        const statusEl = document.getElementById('startup-status');
+        const dots     = Array.from(document.getElementById('startup-dots').children);
+        const total    = dots.length;
+        const palette  = ['#40c21c','#57d42e','#84f163','#48ecc8','#1eff00','#057a0f'];
+        const msgs     = ['initialising','loading assets','establishing socket','configuring webrtc','ready'];
+
+        const ctx = canvas.getContext('2d');
+        canvas.width  = loader.offsetWidth  || window.innerWidth;
+        canvas.height = loader.offsetHeight || window.innerHeight;
+
+        const cols  = Math.floor(canvas.width / 18);
+        const drops = Array.from({length: cols}, () => Math.random() * -80);
+
+        const rain = setInterval(function(){
+            ctx.fillStyle = 'rgba(6,26,8,0.15)';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            for (let i = 0; i < drops.length; i++) {
+                const bit    = Math.random() > 0.5 ? '1' : '0';
+                const bright = drops[i] * 18 > canvas.height * 0.55;
+                ctx.fillStyle   = bright ? palette[Math.floor(Math.random()*2)] : palette[2 + Math.floor(Math.random()*4)];
+                ctx.font        = (Math.random() > 0.8 ? 13 : 10) + "px monospace";
+                ctx.globalAlpha = bright ? 0.15 + Math.random()*0.2 : 0.05 + Math.random()*0.12;
+                ctx.fillText(bit, i*18, drops[i]*18);
+                ctx.globalAlpha = 1;
+                if (drops[i]*18 > canvas.height && Math.random() > 0.96) drops[i] = 0;
+                drops[i] += 0.35 + Math.random()*0.4;
+            }
+        }, 55);
+
+        let p = 0, lastMsg = '';
+        const run = setInterval(function(){
+            p = Math.min(p + (1.4 + Math.random()*0.8), 100);
+            fillEl.style.width = p + '%';
+            const lit = Math.floor((p / 100) * total);
+            dots.forEach((d, i) => {
+                d.className = 'ldot' + (i < lit ? ' lit' : '') + (i === lit ? ' active' : '');
+            });
+            const idx = Math.min(Math.floor(p / 22), msgs.length - 1);
+            if (msgs[idx] !== lastMsg) {
+                statusEl.style.opacity = '0';
+                setTimeout(function(){ statusEl.textContent = msgs[idx]; statusEl.style.opacity = '1'; lastMsg = msgs[idx]; }, 250);
+            }
+            if (p >= 100) {
+                clearInterval(run);
+                clearInterval(rain);
+                setTimeout(function(){
+                    loader.style.transition = 'opacity 0.6s ease';
+                    loader.style.opacity    = '0';
+                    setTimeout(function(){ loader.style.display = 'none'; }, 600);
+                }, 300);
+            }
+        }, 40);
+    })();
+    </script>
+</body>
+</html>
