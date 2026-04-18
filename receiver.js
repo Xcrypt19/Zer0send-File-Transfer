@@ -2,9 +2,6 @@
     const socket = io();
     let peerConnection;
     let activeDownloads = new Map();
-    // Tracks which fileId is currently receiving binary chunks.
-    // Since sender sends all chunks for one file sequentially before the next,
-    // this is set when metadata arrives and cleared on 'done'.
     let currentReceivingFileId = null;
     let fileCount = 0;
 
@@ -16,6 +13,9 @@
     let chatOpen        = false;
     let sessionVerified = false;
     let unreadCount     = 0;
+
+    // Completed blobs keyed by fileId for "Download All as ZIP"
+    const completedFiles = new Map(); // fileId -> { fileName, relativePath, blob }
 
     const configuration = {
         iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
@@ -113,6 +113,7 @@
         const fillEl   = document.getElementById('loader-fill');
         const statusEl = document.getElementById('loader-status');
         const dotsEl   = document.getElementById('loader-dots');
+        if (!screen || !canvas || !fillEl || !statusEl || !dotsEl) return;
         const dots     = Array.from(dotsEl.children);
         const total    = dots.length;
         const palette  = ['#40c21c','#57d42e','#84f163','#48ecc8','#1eff00','#057a0f'];
@@ -162,8 +163,9 @@
         clearInterval(_pulseInterval);
         const fillEl   = document.getElementById('loader-fill');
         const statusEl = document.getElementById('loader-status');
-        const dots     = Array.from(document.getElementById('loader-dots').children);
-        const total    = dots.length;
+        if (!fillEl || !statusEl) { if (onComplete) onComplete(); return; }
+        const dots   = Array.from((document.getElementById('loader-dots') || {children:[]}).children);
+        const total  = dots.length;
         statusEl.style.opacity = '0';
         setTimeout(function() { statusEl.textContent = 'connected'; statusEl.style.opacity = '1'; }, 300);
         let p = parseFloat(fillEl.style.width) || 0;
@@ -180,12 +182,13 @@
     document.querySelector("#receiver-start-con-btn").addEventListener("click", function(){
         const joinID = document.querySelector("#join-id").value.trim();
         if (!joinID.length) { showToast('Please enter a Room ID', 'error'); return; }
-        socket.emit("receiver-join", { uid: joinID });
-        showToast('Connecting to room...', 'info');
+        const alias = (document.querySelector("#receiver-alias") || {}).value || '';
+        socket.emit("receiver-join", { uid: joinID, alias });
+        showToast('Connecting to room…', 'info');
     });
 
     // ── Socket Events ──────────────────────────────────────────
-    socket.on("init", function(uid){
+    socket.on("init", function(senderSocketId){
         showToast('Connected to sender!', 'success');
         document.querySelector(".join-screen").classList.remove("active");
         document.querySelector(".fs-screen").classList.add("active");
@@ -198,18 +201,17 @@
             dataChannel.onmessage = function(event){
                 if (typeof event.data === 'string') {
                     const message = JSON.parse(event.data);
-                    if      (message.type === 'metadata')    startFileReceive(message.data);
-                    else if (message.type === 'done')        completeFileReceive(message.fileId);
-                    else if (message.type === 'remove-file') removeFileItem(message.fileId);
+                    if      (message.type === 'metadata')     startFileReceive(message.data);
+                    else if (message.type === 'done')         completeFileReceive(message.fileId);
+                    else if (message.type === 'remove-file')  removeFileItem(message.fileId);
                     else if (message.type === 'session-meta') handleSessionMeta(message, dataChannel);
-                    else if (message.type === 'chat')        appendChatMessage(message.text, 'them', message.alias || 'Sender');
+                    else if (message.type === 'chat')         appendChatMessage(message.text, 'them', message.alias || 'Sender');
                 } else {
-                    // Binary chunk — route to the active download
                     handleFileChunk(event.data);
                 }
             };
 
-            dataChannel.onopen = function(){ console.log('Data channel open'); };
+            dataChannel.onopen  = function(){ console.log('Data channel open'); };
             dataChannel.onclose = function() { showSenderDisconnected(); };
             window._dataChannel = dataChannel;
         };
@@ -220,8 +222,46 @@
         };
 
         peerConnection.onicecandidate = function(event){
-            if (event.candidate) socket.emit("candidate", { candidate: event.candidate, uid });
+            if (event.candidate) socket.emit("candidate", { candidate: event.candidate, uid: senderSocketId });
         };
+    });
+
+    // ── Kicked by sender ───────────────────────────────────────
+    socket.on("kicked", function(data) {
+        // Show a modal overlay rather than immediately reloading
+        const overlay = document.createElement('div');
+        overlay.id = 'kicked-overlay';
+        overlay.innerHTML = `
+            <div class="sdo-card">
+                <div class="sdo-icon" style="color:#ef4444;"><i class="fas fa-user-slash"></i></div>
+                <div class="sdo-title" style="color:#ef4444;">REMOVED FROM SESSION</div>
+                <div class="sdo-body">
+                    ${escapeHtml(data.reason || 'The sender has removed you from this room.')}
+                    <br><br>Any completed files can still be downloaded.
+                </div>
+                <div class="sdo-actions">
+                    <button class="sdo-btn-dismiss" id="kicked-dismiss">
+                        <i class="fas fa-download"></i> Stay &amp; Download
+                    </button>
+                    <button class="sdo-btn-reload">
+                        <i class="fas fa-rotate-right"></i> New Session
+                    </button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(overlay);
+        overlay.querySelector('.sdo-btn-reload').addEventListener('click', () => location.reload());
+        overlay.querySelector('#kicked-dismiss').addEventListener('click', () => {
+            overlay.style.transition = 'opacity 0.3s';
+            overlay.style.opacity = '0';
+            setTimeout(() => overlay.remove(), 310);
+        });
+
+        const si = document.querySelector('.status-indicator');
+        if (si) { si.classList.remove('waiting','connected'); si.classList.add('disconnected'); }
+        const ct = document.getElementById('connection-text');
+        if (ct) ct.textContent = 'Removed by sender';
+        showToast('You have been removed from the room.', 'error');
     });
 
     // ── Session metadata handler ───────────────────────────────
@@ -301,20 +341,18 @@
         if (waitingSection) waitingSection.style.display = 'none';
 
         const dl = {
-            fileId:           metadata.fileId,
-            fileName:         metadata.fileName,
-            fileSize:         metadata.fileSize,
-            fileType:         metadata.fileType || 'application/octet-stream',
-            relativePath:     metadata.relativePath || '',
-            chunks:           [],
-            receivedBytes:    0,
-            startTime:        Date.now(),
-            lastUITime:       Date.now(),
-            lastUIBytes:      0,
-            completed:        false
+            fileId:        metadata.fileId,
+            fileName:      metadata.fileName,
+            fileSize:      metadata.fileSize,
+            fileType:      metadata.fileType || 'application/octet-stream',
+            relativePath:  metadata.relativePath || '',
+            chunks:        [],
+            receivedBytes: 0,
+            startTime:     Date.now(),
+            completed:     false
         };
         activeDownloads.set(metadata.fileId, dl);
-        currentReceivingFileId = metadata.fileId; // point incoming chunks here
+        currentReceivingFileId = metadata.fileId;
 
         const displayName = dl.relativePath || dl.fileName;
 
@@ -339,25 +377,17 @@
     }
 
     function handleFileChunk(chunk) {
-        // Route chunk to the file currently being received.
-        // currentReceivingFileId is set by startFileReceive and cleared by completeFileReceive.
         const dl = currentReceivingFileId ? activeDownloads.get(currentReceivingFileId) : null;
         if (!dl || dl.completed) return;
-
         dl.chunks.push(chunk);
         dl.receivedBytes += chunk.byteLength;
-
         const row = document.getElementById('file-' + dl.fileId);
         if (row) {
-            const pct = dl.fileSize > 0
-                ? Math.min(Math.round((dl.receivedBytes / dl.fileSize) * 100), 100)
-                : 0;
+            const pct = dl.fileSize > 0 ? Math.min(Math.round((dl.receivedBytes / dl.fileSize) * 100), 100) : 0;
             row.style.setProperty('--pct', pct + '%');
             const pctEl = row.querySelector('.file-card-pct');
             if (pctEl) pctEl.textContent = pct + '%';
         }
-
-        // Periodically consolidate chunks to avoid thousands of small ArrayBuffers
         if (dl.chunks.length > 500) {
             dl.chunks = [new Blob(dl.chunks, { type: dl.fileType })];
         }
@@ -373,51 +403,95 @@
         const spd = (dl.fileSize / dur / 1024 / 1024).toFixed(2);
 
         const row = document.getElementById('file-' + fileId);
+        const finalBlob = new Blob(dl.chunks, { type: dl.fileType });
+
+        // Store for "Download All as ZIP"
+        completedFiles.set(fileId, {
+            fileName:     dl.fileName,
+            relativePath: dl.relativePath,
+            blob:         finalBlob
+        });
+        updateDownloadAllBtn();
+
         if (row) {
             row.style.setProperty('--pct', '100%');
             row.classList.add('download-ready');
             const pctEl = row.querySelector('.file-card-pct');
             if (pctEl) { pctEl.innerHTML = '<i class="fas fa-arrow-down"></i>'; }
             row.title = 'Click to download';
-
-            const finalBlob = new Blob(dl.chunks, { type: dl.fileType });
-            dl.chunks = null;
-
-            let downloaded = false;
-            row.addEventListener('click', function onDownloadClick() {
-                if (downloaded) return;
-                downloaded = true;
-                const url = URL.createObjectURL(finalBlob);
-                const a   = document.createElement('a');
-                a.href     = url;
+            row.addEventListener('click', function() {
+                const a = document.createElement('a');
+                a.href = URL.createObjectURL(finalBlob);
                 a.download = dl.fileName;
-                document.body.appendChild(a);
                 a.click();
-                setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 1500);
-                row.classList.remove('download-ready');
-                row.classList.add('downloaded');
-                if (pctEl) pctEl.innerHTML = '<i class="fas fa-check"></i>';
-                row.title = '';
+                URL.revokeObjectURL(a.href);
             });
         }
-
-        showToast(`${dl.relativePath || dl.fileName} ready — ${spd} MB/s`, 'success');
+        showToast(`${dl.relativePath || dl.fileName} ready — ${spd} MB/s (${formatTime(dur)})`, 'success');
         activeDownloads.delete(fileId);
     }
 
     function removeFileItem(fileId) {
-        const el = document.getElementById('file-' + fileId);
-        if (el) {
-            el.style.transition = 'opacity 0.25s, transform 0.25s';
-            el.style.opacity    = '0';
-            el.style.transform  = 'translateX(20px)';
-            setTimeout(() => { el.remove(); fileCount = Math.max(0, fileCount - 1); updateFileCount(); }, 260);
+        const row = document.getElementById('file-' + fileId);
+        if (row) {
+            row.style.transition = 'opacity 0.25s, transform 0.25s';
+            row.style.opacity    = '0';
+            row.style.transform  = 'translateX(16px)';
+            setTimeout(() => { row.remove(); fileCount--; updateFileCount(); }, 260);
         }
-        if (currentReceivingFileId === fileId) currentReceivingFileId = null;
-        activeDownloads.delete(fileId);
-        showToast('Sender removed a file.', 'info');
+        completedFiles.delete(fileId);
+        updateDownloadAllBtn();
+        showToast('A file was removed by the sender.', 'info');
     }
 
+    // ── Download All as ZIP ────────────────────────────────────
+    function updateDownloadAllBtn() {
+        const btn = document.getElementById('download-all-btn');
+        if (!btn) return;
+        btn.style.display = completedFiles.size >= 2 ? 'inline-flex' : 'none';
+        btn.querySelector('.dab-count').textContent = completedFiles.size + ' files';
+    }
+
+    window.downloadAllAsZip = async function() {
+        if (completedFiles.size === 0) return;
+        const btn = document.getElementById('download-all-btn');
+        if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Building ZIP…'; }
+
+        // Load JSZip from CDN
+        if (!window.JSZip) {
+            await new Promise((res, rej) => {
+                const s = document.createElement('script');
+                s.src = 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js';
+                s.onload = res; s.onerror = rej;
+                document.head.appendChild(s);
+            });
+        }
+
+        const zip = new window.JSZip();
+        completedFiles.forEach(({ fileName, relativePath, blob }) => {
+            const zipPath = relativePath || fileName;
+            zip.file(zipPath, blob);
+        });
+
+        try {
+            const content = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE', compressionOptions: { level: 3 } });
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(content);
+            a.download = 'zer0send-files.zip';
+            a.click();
+            URL.revokeObjectURL(a.href);
+            showToast(`Downloaded ${completedFiles.size} files as ZIP!`, 'success');
+        } catch (err) {
+            showToast('ZIP error: ' + err.message, 'error');
+        } finally {
+            if (btn) {
+                btn.disabled = false;
+                btn.innerHTML = `<i class="fas fa-file-archive"></i> Download All as ZIP <span class="dab-count">${completedFiles.size} files</span>`;
+            }
+        }
+    };
+
+    // ── WebRTC answer / ICE candidate ──────────────────────────
     socket.on("offer", function(data){
         peerConnection.setRemoteDescription(data.offer)
             .then(() => peerConnection.createAnswer())
@@ -476,13 +550,8 @@
     function updateChatBadge() {
         const badge = document.getElementById('chat-badge');
         if (!badge) return;
-        if (unreadCount > 0) {
-            badge.textContent = unreadCount > 99 ? '99+' : String(unreadCount);
-            badge.classList.add('visible');
-        } else {
-            badge.textContent = '';
-            badge.classList.remove('visible');
-        }
+        if (unreadCount > 0) { badge.textContent = unreadCount > 99 ? '99+' : String(unreadCount); badge.classList.add('visible'); }
+        else { badge.textContent = ''; badge.classList.remove('visible'); }
     }
 
     function appendChatMessage(text, side, alias) {
@@ -515,20 +584,14 @@
     function showSenderDisconnected() {
         if (_disconnectShown) return;
         _disconnectShown = true;
-
-        // Update status bar
         const connText = document.getElementById('connection-text');
         if (connText) connText.textContent = 'Sender disconnected';
         const si = document.querySelector('.status-indicator');
         if (si) { si.classList.remove('waiting', 'connected'); si.classList.add('disconnected'); }
-
-        // Build overlay
+        const now     = new Date();
+        const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
         const overlay = document.createElement('div');
         overlay.id = 'sender-disconnected-overlay';
-
-        const now = new Date();
-        const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-
         overlay.innerHTML = `
             <div class="sdo-card">
                 <div class="sdo-icon"><i class="fas fa-plug-circle-xmark"></i></div>
@@ -548,13 +611,11 @@
                 </div>
             </div>
         `;
-
         document.body.appendChild(overlay);
-
         overlay.querySelector('.sdo-btn-reload').addEventListener('click', () => location.reload());
         overlay.querySelector('#sdo-dismiss').addEventListener('click', () => {
             overlay.style.transition = 'opacity 0.3s ease';
-            overlay.style.opacity = '0';
+            overlay.style.opacity    = '0';
             setTimeout(() => overlay.remove(), 310);
         });
     }
@@ -564,10 +625,8 @@
         const tip = document.createElement('div');
         tip.id = 'zer0-tooltip';
         document.body.appendChild(tip);
-
         let current = null;
         const OFFSET_X = 14, OFFSET_Y = -38;
-
         function show(el, x, y) {
             const name = el.getAttribute('data-fullname');
             if (!name) return;
@@ -575,28 +634,22 @@
             tip.classList.add('visible');
             move(x, y);
         }
-        function hide() {
-            tip.classList.remove('visible');
-            current = null;
-        }
+        function hide() { tip.classList.remove('visible'); current = null; }
         function move(x, y) {
-            const tw = tip.offsetWidth, th = tip.offsetHeight;
+            const tw = tip.offsetWidth;
             let left = x + OFFSET_X;
             let top  = y + OFFSET_Y;
-            if (left + tw > window.innerWidth  - 8) left = x - tw - OFFSET_X;
-            if (top  < 8)                           top  = y + 18;
+            if (left + tw > window.innerWidth - 8) left = x - tw - OFFSET_X;
+            if (top < 8) top = y + 18;
             tip.style.left = left + 'px';
             tip.style.top  = top  + 'px';
         }
-
         document.addEventListener('mouseover', function(e) {
             const el = e.target.closest('[data-fullname]');
             if (el && el !== current) { current = el; show(el, e.clientX, e.clientY); }
             else if (!el && current) { hide(); }
         });
-        document.addEventListener('mousemove', function(e) {
-            if (current) move(e.clientX, e.clientY);
-        });
+        document.addEventListener('mousemove', function(e) { if (current) move(e.clientX, e.clientY); });
         document.addEventListener('mouseout', function(e) {
             if (current && !e.relatedTarget?.closest('[data-fullname]')) hide();
         });

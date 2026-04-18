@@ -275,6 +275,75 @@
         0%,100% { opacity:1; transform:scale(1); }
         50%      { opacity:0.65; transform:scale(1.25); }
     }
+
+    /* ── Connected Users Panel ───────────────────────────────── */
+    .users-panel {
+        margin: 1rem 0;
+        background: rgba(6,26,8,0.7);
+        border: 1px solid rgba(64,194,28,0.22);
+        border-radius: 12px;
+        overflow: hidden;
+    }
+    .users-panel .section-header {
+        padding: 0.65rem 1rem;
+        border-bottom: 1px solid rgba(64,194,28,0.12);
+    }
+    .user-count-badge {
+        background: rgba(64,194,28,0.14);
+        border: 1px solid rgba(64,194,28,0.3);
+        color: #40c21c;
+        border-radius: 20px;
+        padding: 2px 10px;
+        font-family: 'Share Tech Mono', monospace;
+        font-size: 0.72rem;
+        letter-spacing: 0.5px;
+    }
+    #users-list { padding: 0.4rem 0; min-height: 44px; }
+    .no-users-msg {
+        padding: 0.75rem 1rem;
+        font-family: 'Share Tech Mono', monospace;
+        font-size: 0.75rem;
+        color: rgba(64,194,28,0.35);
+        display: flex; align-items: center; gap: 0.5rem;
+    }
+    .user-row {
+        display: flex; align-items: center; justify-content: space-between;
+        padding: 0.5rem 1rem;
+        border-bottom: 1px solid rgba(64,194,28,0.07);
+        transition: opacity 0.3s;
+    }
+    .user-row:last-child { border-bottom: none; }
+    .user-row-info { display: flex; align-items: center; gap: 0.55rem; }
+    .user-dot {
+        width: 8px; height: 8px; border-radius: 50%;
+        background: #40c21c;
+        box-shadow: 0 0 6px rgba(64,194,28,0.8);
+        animation: dotPulse 2s ease-in-out infinite;
+        flex-shrink: 0;
+    }
+    .user-alias {
+        font-family: 'Share Tech Mono', monospace;
+        font-size: 0.8rem; color: #84f163;
+        letter-spacing: 0.3px;
+    }
+    .kick-btn {
+        background: rgba(239,68,68,0.1);
+        border: 1px solid rgba(239,68,68,0.3);
+        color: rgba(239,68,68,0.75);
+        border-radius: 6px;
+        padding: 0.3rem 0.65rem;
+        font-family: 'Share Tech Mono', monospace;
+        font-size: 0.7rem;
+        cursor: pointer;
+        transition: all 0.15s;
+        display: flex; align-items: center; gap: 0.3rem;
+    }
+    .kick-btn:hover {
+        background: rgba(239,68,68,0.25);
+        border-color: #ef4444;
+        color: #ef4444;
+        transform: scale(1.04);
+    }
     </style>
 
 </head>
@@ -533,6 +602,20 @@
                     <i class="fas fa-times"></i>
                     Disconnect
                 </button>
+            </div>
+
+            <!-- Connected Users Panel -->
+            <div class="users-panel">
+                <div class="section-header">
+                    <h3><i class="fas fa-users"></i> Connected Users</h3>
+                    <span class="user-count-badge" id="user-count-badge">0 online</span>
+                </div>
+                <div id="users-list">
+                    <div class="no-users-msg" id="no-users-msg">
+                        <i class="fas fa-satellite-dish"></i>
+                        Waiting for receivers to connect…
+                    </div>
+                </div>
             </div>
 
             <!-- File Upload Area -->

@@ -1,8 +1,10 @@
 (function(){
-    let receiverID;
+    // ── Peer registry: socketId → { peerConnection, dataChannel } ─
+    const peers = new Map();
+    let connectedCount = 0;
+    let screenSwitched = false;
+
     const socket = io();
-    let peerConnection;
-    let dataChannel;
     let fileCount = 0;
     let activeTransfers = new Map();
 
@@ -17,6 +19,7 @@
     let sessionActive = false;
     let chatOpen      = false;
     let unreadCount   = 0;
+    let currentRoomUID = '';
 
     const configuration = {
         iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
@@ -91,6 +94,85 @@
         return String(t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
     }
 
+    // ── Broadcast helpers ──────────────────────────────────────
+    /** Send data to every open data channel. */
+    function broadcastData(data) {
+        peers.forEach(({ dataChannel }) => {
+            if (dataChannel && dataChannel.readyState === 'open') {
+                dataChannel.send(data);
+            }
+        });
+    }
+
+    /** True if at least one channel is currently backed up. */
+    function anyChannelBackedUp() {
+        for (const { dataChannel } of peers.values()) {
+            if (dataChannel && dataChannel.readyState === 'open' &&
+                dataChannel.bufferedAmount > 4194304) return true;
+        }
+        return false;
+    }
+
+    // ── Connection UI ──────────────────────────────────────────
+    function updateConnectionUI() {
+        const txt = document.getElementById('connection-text');
+        const si  = document.querySelector('.status-indicator');
+        const badge = document.getElementById('user-count-badge');
+        if (connectedCount > 0) {
+            if (txt) txt.textContent = `${connectedCount} receiver${connectedCount !== 1 ? 's' : ''} connected`;
+            if (si)  { si.classList.remove('waiting','disconnected'); si.classList.add('connected'); }
+        } else {
+            if (txt) txt.textContent = 'Waiting for receiver…';
+            if (si)  { si.classList.remove('connected','disconnected'); si.classList.add('waiting'); }
+        }
+        if (badge) badge.textContent = connectedCount + ' online';
+    }
+
+    // ── Connected Users Panel ──────────────────────────────────
+    function renderUserRow(socketId, alias) {
+        const list = document.getElementById('users-list');
+        if (!list) return;
+        document.getElementById('no-users-msg') && (document.getElementById('no-users-msg').style.display = 'none');
+        const row = document.createElement('div');
+        row.className = 'user-row';
+        row.id = 'user-row-' + socketId;
+        row.innerHTML = `
+            <div class="user-row-info">
+                <span class="user-dot"></span>
+                <span class="user-alias">${escapeHtml(alias)}</span>
+            </div>
+            <button class="kick-btn" onclick="kickReceiver('${escapeHtml(socketId)}')">
+                <i class="fas fa-user-slash"></i> Kick
+            </button>
+        `;
+        list.appendChild(row);
+    }
+
+    function removeUserRow(socketId) {
+        const row = document.getElementById('user-row-' + socketId);
+        if (row) { row.style.opacity = '0'; setTimeout(() => row.remove(), 300); }
+        const list = document.getElementById('users-list');
+        if (list && list.querySelectorAll('.user-row').length <= 1) {
+            const msg = document.getElementById('no-users-msg');
+            if (msg) setTimeout(() => { if (!list.querySelector('.user-row')) msg.style.display = ''; }, 350);
+        }
+    }
+
+    window.kickReceiver = function(socketId) {
+        socket.emit('kick-receiver', { receiverSocketId: socketId, uid: currentRoomUID });
+        // Locally close that peer connection
+        const peer = peers.get(socketId);
+        if (peer) {
+            try { peer.dataChannel && peer.dataChannel.close(); } catch(e){}
+            try { peer.peerConnection.close(); } catch(e){}
+            peers.delete(socketId);
+        }
+        connectedCount = Math.max(0, connectedCount - 1);
+        updateConnectionUI();
+        removeUserRow(socketId);
+        showToast('User removed from room.', 'info');
+    };
+
     // ── Expiry countdown tick ──────────────────────────────────
     function startExpiryCountdown() {
         const tick = () => {
@@ -122,6 +204,7 @@
         const dotsEl   = document.getElementById('loader-dots');
         const roomEl   = document.getElementById('loader-room-id');
         if (roomEl) roomEl.textContent = roomID;
+        if (!screen || !canvas || !fillEl || !statusEl || !dotsEl) return;
         const dots    = Array.from(dotsEl.children);
         const total   = dots.length;
         const palette = ['#40c21c','#57d42e','#84f163','#48ecc8','#1eff00','#057a0f'];
@@ -171,8 +254,10 @@
         clearInterval(_pulseInterval);
         const fillEl   = document.getElementById('loader-fill');
         const statusEl = document.getElementById('loader-status');
-        const dots     = Array.from(document.getElementById('loader-dots').children);
-        const total    = dots.length;
+        if (!fillEl || !statusEl) { if (onComplete) onComplete(); return; }
+        const dotsEl = document.getElementById('loader-dots');
+        const dots   = dotsEl ? Array.from(dotsEl.children) : [];
+        const total  = dots.length;
         statusEl.style.opacity = '0';
         setTimeout(function() { statusEl.textContent = 'connected'; statusEl.style.opacity = '1'; }, 300);
         let p = parseFloat(fillEl.style.width) || 0;
@@ -237,6 +322,7 @@
     // ── Create Room ────────────────────────────────────────────
     document.querySelector("#sender-start-con-btn").addEventListener("click", function(){
         const joinID = generateID();
+        currentRoomUID = joinID;
         const expiryChoice = document.querySelector('input[name="expiry"]:checked');
         const expiryHours  = expiryChoice ? parseInt(expiryChoice.value) : 24;
         expiryMs = Date.now() + expiryHours * 3600 * 1000;
@@ -265,51 +351,71 @@
     };
 
     // ── Socket Events ──────────────────────────────────────────
-    socket.on("init", function(uid){
-        receiverID = uid;
+
+    // A new receiver has connected — create a dedicated PeerConnection for it
+    socket.on("init", function(receiverSocketId){
         sessionActive = true;
-        peerConnection = new RTCPeerConnection(configuration);
+        const pc = new RTCPeerConnection(configuration);
+        const dc = pc.createDataChannel("fileTransfer", { ordered: true });
+        dc.bufferedAmountLowThreshold = 262144; // 256 KB
 
-        dataChannel = peerConnection.createDataChannel("fileTransfer", { ordered: true });
-        dataChannel.bufferedAmountLowThreshold = 262144; // 256KB
+        peers.set(receiverSocketId, { peerConnection: pc, dataChannel: dc });
 
-        dataChannel.onopen = function(){
-            document.getElementById('connection-text').textContent = 'Connected to receiver';
-            const si = document.querySelector('.status-indicator');
-            if (si) { si.classList.remove('waiting','disconnected'); si.classList.add('connected'); }
-            showToast('Receiver connected! You can now share files.', 'success');
-            dataChannel.send(JSON.stringify({ type: 'session-meta', masterKey: passphrase, expiryMs, expiryLabel: getExpiryLabel() }));
-            startExpiryCountdown();
+        dc.onopen = function(){
+            connectedCount++;
+            updateConnectionUI();
+            showToast('New receiver connected!', 'success');
+            // Send session metadata to this specific receiver
+            dc.send(JSON.stringify({
+                type:        'session-meta',
+                masterKey:   passphrase,
+                expiryMs,
+                expiryLabel: getExpiryLabel()
+            }));
+            if (connectedCount === 1) startExpiryCountdown();
         };
 
-        dataChannel.onmessage = function(event) {
+        dc.onmessage = function(event) {
             if (typeof event.data === 'string') {
                 const msg = JSON.parse(event.data);
                 if (msg.type === 'chat') appendChatMessage(msg.text, 'them', msg.alias || 'Receiver');
             }
         };
 
-        dataChannel.onbufferedamountlow = function(){
-            activeTransfers.forEach(t => { if (t.paused && t.resume) t.resume(); });
+        dc.onbufferedamountlow = function(){
+            // Resume any paused transfers if ALL channels are now drained
+            if (!anyChannelBackedUp()) {
+                activeTransfers.forEach(t => {
+                    if (t.paused && t.resume) { t.paused = false; t.resume(); }
+                });
+            }
         };
 
-        dataChannel.onclose = function(){
-            document.getElementById('connection-text').textContent = 'Receiver disconnected';
-            const si = document.querySelector('.status-indicator');
-            if (si) { si.classList.remove('waiting','connected'); si.classList.add('disconnected'); }
-            showToast('Receiver disconnected.', 'error');
+        dc.onclose = function(){
+            const peer = peers.get(receiverSocketId);
+            if (peer && peer.dataChannel === dc) {
+                peers.delete(receiverSocketId);
+                connectedCount = Math.max(0, connectedCount - 1);
+                updateConnectionUI();
+                removeUserRow(receiverSocketId);
+                showToast('A receiver disconnected.', 'error');
+            }
         };
 
-        peerConnection.onicecandidate = function(event){
-            if (event.candidate) socket.emit("candidate", { candidate: event.candidate, uid: receiverID });
+        pc.onicecandidate = function(event){
+            if (event.candidate) socket.emit("candidate", { candidate: event.candidate, uid: receiverSocketId });
         };
 
-        peerConnection.createOffer()
-            .then(offer => peerConnection.setLocalDescription(offer))
-            .then(() => socket.emit("offer", { offer: peerConnection.localDescription, uid: receiverID }));
+        pc.createOffer()
+            .then(offer => pc.setLocalDescription(offer))
+            .then(() => socket.emit("offer", { offer: pc.localDescription, uid: receiverSocketId }));
 
-        document.querySelector(".join-screen").classList.remove("active");
-        document.querySelector(".fs-screen").classList.add("active");
+        // Switch to file-sharing screen on the very first receiver
+        if (!screenSwitched) {
+            screenSwitched = true;
+            document.querySelector(".join-screen").classList.remove("active");
+            document.querySelector(".fs-screen").classList.add("active");
+        }
     });
 
     function getExpiryLabel() {
@@ -319,12 +425,41 @@
         return '1 hour';
     }
 
-    socket.on("answer", data => peerConnection.setRemoteDescription(data.answer));
-    socket.on("candidate", data => peerConnection.addIceCandidate(data.candidate));
+    socket.on("answer", function(data) {
+        const peer = peers.get(data.uid);
+        if (peer) peer.peerConnection.setRemoteDescription(data.answer);
+    });
+
+    socket.on("candidate", function(data) {
+        const peer = peers.get(data.uid);
+        if (peer) peer.peerConnection.addIceCandidate(data.candidate);
+    });
+
+    // Server pushes a fresh receiver list whenever membership changes
+    socket.on("receiver-list", function(data) {
+        const badge = document.getElementById('user-count-badge');
+        if (badge) badge.textContent = data.count + ' online';
+        // Sync user rows
+        const existing = new Set(
+            Array.from(document.querySelectorAll('.user-row'))
+                 .map(el => el.id.replace('user-row-', ''))
+        );
+        const fresh = new Set(data.receivers.map(r => r.socketId));
+        // Remove rows no longer in list
+        existing.forEach(sid => { if (!fresh.has(sid)) removeUserRow(sid); });
+        // Add new rows
+        data.receivers.forEach(r => {
+            if (!existing.has(r.socketId)) renderUserRow(r.socketId, r.alias);
+        });
+    });
+
+    socket.on("receiver-left", function(data) {
+        removeUserRow(data.socketId);
+    });
 
     // ── Drag & Drop (files + folders) ─────────────────────────
-    const dropArea  = document.getElementById('drop-area');
-    const fileInput = document.getElementById('file-input');
+    const dropArea   = document.getElementById('drop-area');
+    const fileInput  = document.getElementById('file-input');
     const folderInput = document.getElementById('folder-input');
 
     ['dragenter','dragover','dragleave','drop'].forEach(ev =>
@@ -334,24 +469,27 @@
     ['dragleave','drop'].forEach(ev =>
         dropArea.addEventListener(ev, () => dropArea.classList.remove('dragover'), false));
 
+    function hasOpenChannel() {
+        for (const { dataChannel } of peers.values()) {
+            if (dataChannel && dataChannel.readyState === 'open') return true;
+        }
+        return false;
+    }
+
     dropArea.addEventListener('drop', async function(e) {
-        if (!dataChannel || dataChannel.readyState !== 'open') { showToast('No receiver connected yet.', 'error'); return; }
+        if (!hasOpenChannel()) { showToast('No receivers connected yet.', 'error'); return; }
         const items = Array.from(e.dataTransfer.items || []);
         const hasDirectories = items.some(item => {
             const entry = item.webkitGetAsEntry ? item.webkitGetAsEntry() : null;
             return entry && entry.isDirectory;
         });
-
         if (hasDirectories) {
-            // Folder drop — traverse directory tree
             for (const item of items) {
                 const entry = item.webkitGetAsEntry ? item.webkitGetAsEntry() : null;
                 if (entry) await traverseEntry(entry, '');
             }
         } else {
-            // Plain files
-            const files = Array.from(e.dataTransfer.files);
-            files.forEach(f => sendFile(f, f.name));
+            Array.from(e.dataTransfer.files).forEach(f => sendFile(f, f.name));
         }
     }, false);
 
@@ -372,7 +510,7 @@
                     reader.readEntries(async function(entries) {
                         if (!entries.length) { resolve(); return; }
                         for (const e of entries) await traverseEntry(e, dirPath);
-                        readBatch(); // read next batch (browsers limit to 100 at a time)
+                        readBatch();
                     }, resolve);
                 }
                 readBatch();
@@ -380,30 +518,24 @@
         }
     }
 
-    // File input — reset value after use so same file can be re-selected
     fileInput.addEventListener("change", function(e) {
-        const files = Array.from(e.target.files);
-        if (!dataChannel || dataChannel.readyState !== 'open') { showToast('No receiver connected yet.', 'error'); fileInput.value = ''; return; }
-        files.forEach(f => sendFile(f, f.name));
-        fileInput.value = ''; // reset so same file triggers change again
+        if (!hasOpenChannel()) { showToast('No receivers connected yet.', 'error'); fileInput.value = ''; return; }
+        Array.from(e.target.files).forEach(f => sendFile(f, f.name));
+        fileInput.value = '';
     });
 
     if (folderInput) {
         folderInput.addEventListener("change", function(e) {
-            const files = Array.from(e.target.files);
-            if (!dataChannel || dataChannel.readyState !== 'open') { showToast('No receiver connected yet.', 'error'); folderInput.value = ''; return; }
-            files.forEach(f => sendFile(f, f.webkitRelativePath || f.name));
+            if (!hasOpenChannel()) { showToast('No receivers connected yet.', 'error'); folderInput.value = ''; return; }
+            Array.from(e.target.files).forEach(f => sendFile(f, f.webkitRelativePath || f.name));
             folderInput.value = '';
         });
     }
 
-    // ── Send File ──────────────────────────────────────────────
-    // Sequential chunk sending: one FileReader.readAsArrayBuffer at a time.
-    // This is critical for large files (video) — parallel async reads cause
-    // out-of-order sends and buffer overflows that crash the transfer.
+    // ── Send File (broadcast to ALL receivers) ─────────────────
     function sendFile(file, relativePath) {
         const fileId    = Date.now() + '-' + Math.floor(Math.random() * 1e9);
-        const CHUNK     = 65536; // 64 KB — conservative, reliable for all file types
+        const CHUNK     = 65536; // 64 KB
         let offset      = 0;
         let startTime   = Date.now();
         let lastUITime  = startTime;
@@ -413,7 +545,8 @@
 
         const displayName = relativePath || file.name;
 
-        dataChannel.send(JSON.stringify({
+        // Send metadata to ALL connected receivers
+        broadcastData(JSON.stringify({
             type: 'metadata',
             data: {
                 fileId,
@@ -447,9 +580,7 @@
         row.querySelector('.remove-file-btn').addEventListener('click', function() {
             isCancelled = true;
             activeTransfers.delete(fileId);
-            if (dataChannel && dataChannel.readyState === 'open') {
-                dataChannel.send(JSON.stringify({ type: 'remove-file', fileId }));
-            }
+            broadcastData(JSON.stringify({ type: 'remove-file', fileId }));
             row.style.transition = 'opacity 0.25s, transform 0.25s';
             row.style.opacity    = '0';
             row.style.transform  = 'translateX(16px)';
@@ -459,22 +590,21 @@
 
         // ── Progress helper ─────────────────────────────────────
         function refreshUI() {
-            const pct = file.size > 0 ? Math.min(Math.round((offset / file.size) * 100), 100) : 0;
+            const now   = Date.now();
+            const pct   = file.size > 0 ? Math.min(Math.round((offset / file.size) * 100), 100) : 0;
             row.style.setProperty('--pct', pct + '%');
             const pctEl = row.querySelector('.file-card-pct');
             if (pctEl) pctEl.textContent = pct + '%';
-            lastUITime  = Date.now();
+            lastUITime  = now;
             lastUIBytes = offset;
         }
 
-        // ── Sequential chunk sender ─────────────────────────────
-        // One read at a time: onload → send → read next.
-        // No while-loops, no parallel readers — prevents video corruption.
+        // ── Sequential chunk sender (broadcast to all peers) ────
         function sendNextChunk() {
             if (isCancelled) return;
 
-            // Back-pressure: wait for buffer to drain before sending more
-            if (dataChannel.bufferedAmount > 4194304) { // 4 MB
+            // Back-pressure: pause if any channel is backed up
+            if (anyChannelBackedUp()) {
                 isPaused = true;
                 activeTransfers.set(fileId, {
                     paused: true,
@@ -484,42 +614,34 @@
             }
 
             if (offset >= file.size) {
-                // ── All chunks sent ──────────────────────────────
                 const dur = Math.max((Date.now() - startTime) / 1000, 0.001);
                 const spd = (file.size / dur / 1024 / 1024).toFixed(2);
-                dataChannel.send(JSON.stringify({ type: 'done', fileId }));
+                broadcastData(JSON.stringify({ type: 'done', fileId }));
 
                 row.style.setProperty('--pct', '100%');
                 row.classList.add('send-complete');
                 const pctEl = row.querySelector('.file-card-pct');
                 if (pctEl) pctEl.textContent = '✓';
-
                 showToast(`${file.name} sent — ${spd} MB/s (${formatTime(dur)})`, 'success');
                 activeTransfers.delete(fileId);
                 return;
             }
 
-            // ── Read one chunk ───────────────────────────────────
             const end    = Math.min(offset + CHUNK, file.size);
             const slice  = file.slice(offset, end);
             const reader = new FileReader();
-
             reader.onload = function(e) {
                 if (isCancelled) return;
                 try {
-                    dataChannel.send(e.target.result);
+                    broadcastData(e.target.result);   // binary broadcast
                     offset += e.target.result.byteLength;
                     refreshUI();
-                    sendNextChunk(); // recurse — strictly sequential
+                    sendNextChunk();
                 } catch (err) {
                     showToast('Transfer error: ' + (err.message || 'unknown'), 'error');
                 }
             };
-
-            reader.onerror = function() {
-                showToast(`Read error on "${file.name}"`, 'error');
-            };
-
+            reader.onerror = function() { showToast(`Read error on "${file.name}"`, 'error'); };
             reader.readAsArrayBuffer(slice);
         }
 
@@ -547,8 +669,8 @@
         if (!input) return;
         const text = input.value.trim();
         if (!text) return;
-        if (!dataChannel || dataChannel.readyState !== 'open') { showToast('Not connected — cannot send message.', 'error'); return; }
-        dataChannel.send(JSON.stringify({ type:'chat', text, alias:'Sender' }));
+        if (!hasOpenChannel()) { showToast('Not connected — cannot send message.', 'error'); return; }
+        broadcastData(JSON.stringify({ type:'chat', text, alias:'Sender' }));
         appendChatMessage(text, 'me', 'You');
         input.value = '';
     };
@@ -562,13 +684,8 @@
     function updateChatBadge() {
         const badge = document.getElementById('chat-badge');
         if (!badge) return;
-        if (unreadCount > 0) {
-            badge.textContent = unreadCount > 99 ? '99+' : String(unreadCount);
-            badge.classList.add('visible');
-        } else {
-            badge.textContent = '';
-            badge.classList.remove('visible');
-        }
+        if (unreadCount > 0) { badge.textContent = unreadCount > 99 ? '99+' : String(unreadCount); badge.classList.add('visible'); }
+        else { badge.textContent = ''; badge.classList.remove('visible'); }
     }
 
     function appendChatMessage(text, side, alias) {
@@ -601,10 +718,8 @@
         const tip = document.createElement('div');
         tip.id = 'zer0-tooltip';
         document.body.appendChild(tip);
-
         let current = null;
         const OFFSET_X = 14, OFFSET_Y = -38;
-
         function show(el, x, y) {
             const name = el.getAttribute('data-fullname');
             if (!name) return;
@@ -612,28 +727,22 @@
             tip.classList.add('visible');
             move(x, y);
         }
-        function hide() {
-            tip.classList.remove('visible');
-            current = null;
-        }
+        function hide() { tip.classList.remove('visible'); current = null; }
         function move(x, y) {
-            const tw = tip.offsetWidth, th = tip.offsetHeight;
+            const tw = tip.offsetWidth;
             let left = x + OFFSET_X;
             let top  = y + OFFSET_Y;
-            if (left + tw > window.innerWidth  - 8) left = x - tw - OFFSET_X;
-            if (top  < 8)                           top  = y + 18;
+            if (left + tw > window.innerWidth - 8) left = x - tw - OFFSET_X;
+            if (top < 8) top = y + 18;
             tip.style.left = left + 'px';
             tip.style.top  = top  + 'px';
         }
-
         document.addEventListener('mouseover', function(e) {
             const el = e.target.closest('[data-fullname]');
             if (el && el !== current) { current = el; show(el, e.clientX, e.clientY); }
             else if (!el && current) { hide(); }
         });
-        document.addEventListener('mousemove', function(e) {
-            if (current) move(e.clientX, e.clientY);
-        });
+        document.addEventListener('mousemove', function(e) { if (current) move(e.clientX, e.clientY); });
         document.addEventListener('mouseout', function(e) {
             if (current && !e.relatedTarget?.closest('[data-fullname]')) hide();
         });
