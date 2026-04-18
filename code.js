@@ -283,14 +283,17 @@
     // ── Socket Events ──────────────────────────────────────────
     socket.on("init", function(receiverSocketId){
         sessionActive = true;
-        const pc = new RTCPeerConnection(configuration);
+        const pc = new RTCPeerConnection({
+            ...configuration,
+            sctp: { maxMessageSize: 1048576 }   // match your chunk size
+        });
 
         // Max-performance data channel settings
         const dc = pc.createDataChannel("fileTransfer", {
-            ordered:   true,
+            ordered:   false,
             maxRetransmits: undefined  // reliable
         });
-        dc.bufferedAmountLowThreshold = 1048576; // 1 MB — resume threshold
+        dc.bufferedAmountLowThreshold = 4194304; // 1 MB — resume threshold
 
         peers.set(receiverSocketId, { peerConnection: pc, dataChannel: dc });
 
@@ -412,9 +415,9 @@
     //
     function sendFile(file, relativePath) {
         const fileId      = Date.now() + '-' + Math.floor(Math.random() * 1e9);
-        const CHUNK       = 262144;   // 256 KB
-        const QUEUE_DEPTH = 8;        // chunks pre-read ahead
-        const BUFFER_HIGH = 8388608;  // 8 MB high-water mark
+        const CHUNK       = 1048576;   // 256 KB
+        const QUEUE_DEPTH = 24;        // chunks pre-read ahead
+        const BUFFER_HIGH = 16777216;  // 16 MB high-water mark
 
         let readAhead    = 0;    // byte offset of the next slice to schedule for reading
         let sentBytes    = 0;    // byte offset of data actually sent
