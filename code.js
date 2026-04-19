@@ -105,7 +105,7 @@
     }
     function anyChannelBackedUp() {
         for (const { dataChannel } of peers.values()) {
-            if (dataChannel && dataChannel.readyState === 'open' && dataChannel.bufferedAmount > 8388608) return true; // 8 MB
+            if (dataChannel && dataChannel.readyState === 'open' && dataChannel.bufferedAmount > 4194304) return true; // 4 MB
         }
         return false;
     }
@@ -310,7 +310,7 @@
         const dc = pc.createDataChannel("fileTransfer", {
             ordered: true
         });
-        dc.bufferedAmountLowThreshold = 2097152; // 2 MB — resume when buffer drains below this
+        dc.bufferedAmountLowThreshold = 524288; // 512 KB — resume as soon as buffer has room
 
         peers.set(receiverSocketId, { peerConnection: pc, dataChannel: dc });
 
@@ -341,6 +341,22 @@
             showToast('A receiver disconnected.', 'error');
         };
         pc.onicecandidate = e => { if (e.candidate) socket.emit("candidate", { candidate: e.candidate, uid: receiverSocketId }); };
+        pc.onconnectionstatechange = () => {
+            const s = pc.connectionState;
+            if (s === 'failed') {
+                // Attempt ICE restart before giving up
+                pc.restartIce();
+                showToast('Connection unstable — attempting ICE restart…', 'info');
+            }
+        };
+        pc.onsignalingstatechange = () => {
+            if (pc.signalingState === 'closed') {
+                peers.delete(receiverSocketId);
+                connectedCount = Math.max(0, connectedCount - 1);
+                updateConnectionUI();
+                removeUserRow(receiverSocketId);
+            }
+        };
         pc.createOffer()
             .then(o => pc.setLocalDescription(o))
             .then(() => socket.emit("offer", { offer: pc.localDescription, uid: receiverSocketId }));
@@ -423,32 +439,40 @@
         });
     }
 
-    // ── Send File — high-throughput pipelined engine ───────────
+    // ── Send File — time-sliced pipelined engine ───────────────
     //
-    // Optimisations vs the naïve approach:
-    //   • CHUNK = 256 KB → 4× fewer dc.send() calls, SCTP frames, and receiver onmessage events vs 64 KB
-    //   • QUEUE_DEPTH = 24 → up to 6 MB of reads in flight so disk I/O never stalls the pipeline
-    //   • Blob.arrayBuffer() → microtask scheduling; no FileReader object allocation per chunk
-    //   • packChunk() → 24-byte binary header carries fileId so multi-file drops work correctly
-    //   • rAF-throttled UI → DOM writes batched to ≤60/s instead of one per chunk
-    //   • Back-pressure at 8 MB → drain loop runs longer between pauses = higher sustained throughput
+    // Architecture:
+    //   • CHUNK = 256 KB     — SCTP sweet-spot; large enough for throughput, small enough to never
+    //                          fragment in Chrome's SCTP layer (which breaks at ~1 MB)
+    //   • QUEUE_DEPTH = 16   — 4 MB of disk reads in flight ahead of the send position
+    //   • drain() time-slices at MAX_DRAIN_MS (8 ms) — yields to the browser event loop between
+    //                          bursts so ICE keepalives and SCTP ACKs are never starved.
+    //                          This is the critical fix: a tight while-loop that drains 6 MB of
+    //                          chunks in one go blocks the event loop for 50-200 ms, which starves
+    //                          ICE keepalives and kills the connection.
+    //   • Back-pressure at 4 MB / resume at 512 KB — safe operating window inside Chrome's 16 MB
+    //                          SCTP send buffer; avoids the "SCTP overwhelm" crash mode.
+    //   • Blob.arrayBuffer() — microtask resolution; no FileReader object per chunk
+    //   • packChunk()        — 24-byte binary header lets receiver route interleaved multi-file chunks
+    //   • rAF UI throttle    — DOM writes capped at 60 fps regardless of send speed
     //
+    const MAX_DRAIN_MS = 8; // max ms spent in a single drain() call before yielding via setTimeout
+
     function sendFile(file, relativePath) {
         const fileId      = Date.now() + '-' + Math.floor(Math.random() * 1e9);
-        const CHUNK       = 262144;  // 256 KB — sweet-spot for SCTP throughput on all modern browsers
-        const QUEUE_DEPTH = 24;      // chunks pre-read in parallel; 24 × 256 KB = 6 MB look-ahead
+        const CHUNK       = 262144; // 256 KB
+        const QUEUE_DEPTH = 16;     // 16 × 256 KB = 4 MB look-ahead
 
-        let readAhead    = 0;
-        let sentBytes    = 0;
-        const queue      = [];
-        let activeReads  = 0;
-        let draining     = false;
-        let isCancelled  = false;
-        const startTime  = Date.now();
+        let readAhead   = 0;
+        let sentBytes   = 0;
+        const queue     = [];
+        let activeReads = 0;
+        let draining    = false;
+        let isCancelled = false;
+        const startTime = Date.now();
 
         const displayName = relativePath || file.name;
 
-        // Send metadata first — receiver creates the file entry on receipt
         broadcastData(JSON.stringify({
             type: 'metadata',
             data: { fileId, fileName: file.name, fileSize: file.size, fileType: file.type || 'application/octet-stream', relativePath: relativePath || '' }
@@ -479,8 +503,7 @@
             showToast(`${file.name} removed.`, 'info');
         });
 
-        // ── rAF-throttled UI refresh ───────────────────────────
-        // Batches DOM writes to ≤60 fps regardless of how fast chunks are sent.
+        // ── rAF-throttled UI (max 60 fps) ─────────────────────
         let rafPending = false;
         function scheduleRefreshUI() {
             if (rafPending) return;
@@ -494,8 +517,7 @@
             });
         }
 
-        // ── Pre-read chunks with Blob.arrayBuffer() ────────────
-        // arrayBuffer() resolves on the microtask queue — faster than FileReader's macrotask events.
+        // ── Read pipeline: Blob.arrayBuffer() ─────────────────
         function fillQueue() {
             while (!isCancelled && activeReads + queue.length < QUEUE_DEPTH && readAhead < file.size) {
                 const start = readAhead;
@@ -507,21 +529,25 @@
                         if (isCancelled) { activeReads--; return; }
                         activeReads--;
                         queue.push(buf);
-                        fillQueue();           // keep read pipeline full
+                        fillQueue();
                         if (!draining) drain();
                     })
                     .catch(() => showToast(`Read error on "${file.name}"`, 'error'));
             }
         }
 
-        // ── Drain queue into DataChannel ───────────────────────
+        // ── Time-sliced drain: yields every MAX_DRAIN_MS ───────
+        // Keeping the drain loop bounded prevents it from hogging the event loop
+        // for hundreds of milliseconds, which would starve ICE keepalives and
+        // cause the peer connection to time out mid-transfer.
         function drain() {
             if (isCancelled) return;
             draining = true;
+            const sliceStart = Date.now();
 
             while (queue.length > 0) {
+                // ① Back-pressure: pause if any channel's send buffer is too full
                 if (anyChannelBackedUp()) {
-                    // Pause until bufferedamountlow fires on each channel
                     activeTransfers.set(fileId, {
                         paused: true,
                         resume: () => { activeTransfers.delete(fileId); drain(); }
@@ -529,12 +555,23 @@
                     draining = false;
                     return;
                 }
+
                 const buf = queue.shift();
-                broadcastData(packChunk(fileId, buf));   // binary header + data
+                broadcastData(packChunk(fileId, buf));
                 sentBytes += buf.byteLength;
-                scheduleRefreshUI();                     // throttled — won't block the loop
+                scheduleRefreshUI();
+
+                // ② Time-slice: if we've been in this loop too long, yield to the event loop.
+                //    setTimeout(drain, 0) schedules the next burst as a macrotask, giving the
+                //    browser a chance to process ICE keepalives, SCTP ACKs, and UI events.
+                if (Date.now() - sliceStart >= MAX_DRAIN_MS) {
+                    draining = false;
+                    setTimeout(drain, 0);
+                    return;
+                }
             }
 
+            // All queued chunks sent — check for completion
             if (sentBytes >= file.size && activeReads === 0 && queue.length === 0) {
                 const dur = Math.max((Date.now() - startTime) / 1000, 0.001);
                 const spd = (file.size / dur / 1048576).toFixed(2);
@@ -545,8 +582,6 @@
                 if (el) el.textContent = '✓';
                 showToast(`${file.name} sent — ${spd} MB/s (${formatTime(dur)})`, 'success');
                 activeTransfers.delete(fileId);
-                draining = false;
-                return;
             }
 
             draining = false;
