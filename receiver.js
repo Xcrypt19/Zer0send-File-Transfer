@@ -2,7 +2,6 @@
     const socket = io();
     let peerConnection;
     let activeDownloads = new Map();
-    let currentReceivingFileId = null;
     let fileCount = 0;
 
     let _rainInterval = null;
@@ -18,7 +17,16 @@
     const completedFiles = new Map(); // fileId -> { fileName, relativePath, blob }
 
     const configuration = {
-        iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+        iceServers: [
+            { urls: 'stun:stun.l.google.com:19302'  },
+            { urls: 'stun:stun1.l.google.com:19302' },
+            { urls: 'stun:stun2.l.google.com:19302' },
+            { urls: 'stun:stun3.l.google.com:19302' },
+            { urls: 'stun:stun4.l.google.com:19302' },
+        ],
+        iceCandidatePoolSize: 10,
+        bundlePolicy:  'max-bundle',
+        rtcpMuxPolicy: 'require',
     };
 
     // ── Toast ──────────────────────────────────────────────────
@@ -83,6 +91,21 @@
 
     function escapeHtml(t) {
         return String(t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+
+    // ── Binary chunk unpacking ─────────────────────────────────
+    // Sender prepends a 24-byte ASCII fileId header to every binary message.
+    // This lets us route each chunk to the correct in-progress download by ID,
+    // even when multiple files are sent simultaneously (interleaved chunks).
+    const HEADER_LEN = 24;
+    function unpackChunk(data) {
+        const bytes = new Uint8Array(data, 0, HEADER_LEN);
+        let fileId = '';
+        for (let i = 0; i < HEADER_LEN; i++) {
+            if (bytes[i] === 0) break;
+            fileId += String.fromCharCode(bytes[i]);
+        }
+        return { fileId, chunk: data.slice(HEADER_LEN) };
     }
 
     // ── Expiry countdown ───────────────────────────────────────
@@ -352,7 +375,6 @@
             completed:     false
         };
         activeDownloads.set(metadata.fileId, dl);
-        currentReceivingFileId = metadata.fileId;
 
         const displayName = dl.relativePath || dl.fileName;
 
@@ -376,8 +398,10 @@
         showToast(`Receiving ${displayName}…`, 'info');
     }
 
-    function handleFileChunk(chunk) {
-        const dl = currentReceivingFileId ? activeDownloads.get(currentReceivingFileId) : null;
+    function handleFileChunk(data) {
+        // Unpack binary header to get fileId — works correctly for simultaneous multi-file transfers
+        const { fileId, chunk } = unpackChunk(data);
+        const dl = activeDownloads.get(fileId);
         if (!dl || dl.completed) return;
         dl.chunks.push(chunk);
         dl.receivedBytes += chunk.byteLength;
@@ -388,7 +412,8 @@
             const pctEl = row.querySelector('.file-card-pct');
             if (pctEl) pctEl.textContent = pct + '%';
         }
-        if (dl.chunks.length > 500) {
+        // Consolidate chunks every 1000 to keep GC pressure low (1000 × 256 KB ≈ 256 MB per merge)
+        if (dl.chunks.length > 1000) {
             dl.chunks = [new Blob(dl.chunks, { type: dl.fileType })];
         }
     }
@@ -397,7 +422,6 @@
         const dl = activeDownloads.get(fileId);
         if (!dl) return;
         dl.completed = true;
-        if (currentReceivingFileId === fileId) currentReceivingFileId = null;
 
         const dur = Math.max((Date.now() - dl.startTime) / 1000, 0.001);
         const spd = (dl.fileSize / dur / 1024 / 1024).toFixed(2);
