@@ -1,14 +1,66 @@
 const express = require('express');
 const app = express();
 const http = require('http').createServer(app);
+
+// Lock signalling to the production origin.
+// Set ALLOWED_ORIGIN env var to override for local dev (e.g. http://localhost:3000).
+const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || 'https://zer0send.onrender.com';
+
 const io = require('socket.io')(http, {
     pingTimeout: 60000,
     pingInterval: 25000,
     transports: ['websocket', 'polling'],
-    cors: { origin: '*', methods: ['GET', 'POST'] }
+    cors: { origin: ALLOWED_ORIGIN, methods: ['GET', 'POST'] }
 });
 const path = require('path');
 const PORT = process.env.PORT || 3000;
+
+// ── Per-socket rate limiter ────────────────────────────────────────────────
+// No external package needed — a simple fixed-window counter per socket ID.
+// makeRateLimiter(max, windowMs) returns an allow(socketId) function.
+// Returns true when the event should be processed, false when the socket has
+// exceeded its quota and the event should be silently dropped.
+//
+// Limits are intentionally generous — they stop abuse, not real usage:
+//   sender-join   5 / min  — spamming room creation exhausts the senders map
+//   receiver-join 10 / min — tight-loop joining can exhaust roomReceivers
+//   offer/answer  20 / min — ICE restart storms during reconnection attempts
+//   candidate     60 / min — normal ICE trickle is 5-15 candidates per session
+//   kick          20 / min — prevent kick-spam against a room's receivers
+//
+function makeRateLimiter(maxCalls, windowMs) {
+    const windows = new Map(); // socketId -> { count, resetAt }
+
+    // Prune stale entries every 5 minutes so the Map doesn't grow forever
+    // on servers with high connection churn.
+    setInterval(() => {
+        const now = Date.now();
+        for (const [id, w] of windows) {
+            if (now >= w.resetAt) windows.delete(id);
+        }
+    }, 5 * 60_000);
+
+    return function allow(socketId) {
+        const now = Date.now();
+        const w   = windows.get(socketId);
+        if (!w || now >= w.resetAt) {
+            windows.set(socketId, { count: 1, resetAt: now + windowMs });
+            return true;
+        }
+        if (w.count >= maxCalls) return false;
+        w.count++;
+        return true;
+    };
+}
+
+const rl = {
+    senderJoin:   makeRateLimiter(5,  60_000),
+    receiverJoin: makeRateLimiter(10, 60_000),
+    offer:        makeRateLimiter(20, 60_000),
+    answer:       makeRateLimiter(20, 60_000),
+    candidate:    makeRateLimiter(60, 60_000),
+    kick:         makeRateLimiter(20, 60_000),
+};
 
 app.use(express.static(__dirname));
 
@@ -94,6 +146,14 @@ io.on('connection', (socket) => {
 
     // Sender joins ------------------------------------------------
     socket.on('sender-join', (data) => {
+        if (!rl.senderJoin(socket.id)) {
+            socket.emit('error', { message: 'Too many room creations — please slow down.' });
+            return;
+        }
+        if (!data || typeof data.uid !== 'string' || !/^\d{3}-\d{3}-\d{3}$/.test(data.uid)) {
+            socket.emit('error', { message: 'Invalid room ID format.' });
+            return;
+        }
         console.log('Sender joined room:', data.uid);
         senders[data.uid] = socket.id;
         roomReceivers[data.uid] = roomReceivers[data.uid] || new Map();
@@ -102,6 +162,14 @@ io.on('connection', (socket) => {
 
     // Receiver joins ----------------------------------------------
     socket.on('receiver-join', (data) => {
+        if (!rl.receiverJoin(socket.id)) {
+            socket.emit('error', { message: 'Too many join attempts — please slow down.' });
+            return;
+        }
+        if (!data || typeof data.uid !== 'string' || !/^\d{3}-\d{3}-\d{3}$/.test(data.uid)) {
+            socket.emit('error', { message: 'Invalid room ID format.' });
+            return;
+        }
         console.log('Receiver joining room:', data.uid);
         const senderSocketId = senders[data.uid];
         if (!senderSocketId) {
@@ -109,7 +177,8 @@ io.on('connection', (socket) => {
             return;
         }
         if (!roomReceivers[data.uid]) roomReceivers[data.uid] = new Map();
-        const alias = data.alias || ('User-' + socket.id.slice(-4).toUpperCase());
+        // Clamp alias to 32 chars so a huge string can't bloat the receiver list payload
+        const alias = (typeof data.alias === 'string' ? data.alias.slice(0, 32).trim() : '') || ('User-' + socket.id.slice(-4).toUpperCase());
         roomReceivers[data.uid].set(socket.id, { alias, joinedAt: Date.now() });
         receiverRooms[socket.id] = data.uid;
         socket.join(data.uid);
@@ -124,17 +193,21 @@ io.on('connection', (socket) => {
 
     // WebRTC signalling -------------------------------------------
     socket.on('offer', (data) => {
+        if (!rl.offer(socket.id) || !data || typeof data.uid !== 'string') return;
         socket.to(data.uid).emit('offer', { offer: data.offer, uid: socket.id });
     });
     socket.on('answer', (data) => {
+        if (!rl.answer(socket.id) || !data || typeof data.uid !== 'string') return;
         socket.to(data.uid).emit('answer', { answer: data.answer, uid: socket.id });
     });
     socket.on('candidate', (data) => {
+        if (!rl.candidate(socket.id) || !data || typeof data.uid !== 'string') return;
         socket.to(data.uid).emit('candidate', { candidate: data.candidate, uid: socket.id });
     });
 
     // Sender kicks a receiver ------------------------------------
     socket.on('kick-receiver', (data) => {
+        if (!rl.kick(socket.id) || !data || typeof data.uid !== 'string') return;
         const { receiverSocketId, uid } = data;
         if (senders[uid] !== socket.id) return;   // only the room owner can kick
         const target = io.sockets.sockets.get(receiverSocketId);
