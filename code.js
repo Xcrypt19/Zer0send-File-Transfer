@@ -84,7 +84,7 @@
     }
     function anyChannelBackedUp() {
         for (const { dataChannel } of peers.values()) {
-            if (dataChannel && dataChannel.readyState === 'open' && dataChannel.bufferedAmount > 8388608) return true; // 8 MB
+            if (dataChannel && dataChannel.readyState === 'open' && dataChannel.bufferedAmount > 2097152) return true; // 2 MB
         }
         return false;
     }
@@ -283,17 +283,13 @@
     // ── Socket Events ──────────────────────────────────────────
     socket.on("init", function(receiverSocketId){
         sessionActive = true;
-        const pc = new RTCPeerConnection({
-            ...configuration,
-            sctp: { maxMessageSize: 1048576 }   // match your chunk size
-        });
+        const pc = new RTCPeerConnection(configuration);
 
-        // Max-performance data channel settings
+        // Ordered + reliable data channel — required for correct chunk ordering
         const dc = pc.createDataChannel("fileTransfer", {
-            ordered:   false,
-            maxRetransmits: undefined  // reliable
+            ordered: true
         });
-        dc.bufferedAmountLowThreshold = 4194304; // 1 MB — resume threshold
+        dc.bufferedAmountLowThreshold = 524288; // 512 KB — resume threshold
 
         peers.set(receiverSocketId, { peerConnection: pc, dataChannel: dc });
 
@@ -415,9 +411,9 @@
     //
     function sendFile(file, relativePath) {
         const fileId      = Date.now() + '-' + Math.floor(Math.random() * 1e9);
-        const CHUNK       = 1048576;   // 256 KB
-        const QUEUE_DEPTH = 24;        // chunks pre-read ahead
-        const BUFFER_HIGH = 16777216;  // 16 MB high-water mark
+        const CHUNK       = 65536;     // 64 KB — safe for all browsers / SCTP
+        const QUEUE_DEPTH = 8;         // chunks pre-read ahead
+        const BUFFER_HIGH = 2097152;   // 2 MB high-water mark
 
         let readAhead    = 0;    // byte offset of the next slice to schedule for reading
         let sentBytes    = 0;    // byte offset of data actually sent

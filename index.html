@@ -508,33 +508,36 @@
     (function(){
         var canvas = document.getElementById('bg-matrix');
         var ctx    = canvas.getContext('2d');
-        var palette = ['#40c21c','#57d42e','#84f163','#1eff00','#057a0f','#48ecc8'];
-        var cols, drops;
+        var palette = ['#40c21c','#57d42e','#84f163','#48ecc8','#1eff00','#2dba16','#3cd426'];
+        var COL_W = 20, drops = [];
 
         function resize(){
             canvas.width  = window.innerWidth;
             canvas.height = window.innerHeight;
         }
-        function init(){
-            cols  = Math.floor(canvas.width / 20);
-            drops = Array.from({length: cols}, function(){ return Math.random() * -canvas.height; });
+        function initDrops(){
+            var cols = Math.floor(canvas.width / COL_W);
+            drops = Array.from({length: cols}, function(){ return Math.random() * -(canvas.height / 16); });
         }
-        resize(); init();
-        window.addEventListener('resize', function(){ resize(); init(); });
+        resize(); initDrops();
+        window.addEventListener('resize', function(){ resize(); initDrops(); });
 
         setInterval(function(){
-            ctx.fillStyle = 'rgba(9,25,11,0.055)';
+            ctx.fillStyle = 'rgba(6,18,4,0.18)';
             ctx.fillRect(0, 0, canvas.width, canvas.height);
             for (var i = 0; i < drops.length; i++) {
+                var y = drops[i] * 16;
+                var bit = Math.random() > 0.5 ? '1' : '0';
+                var near_bottom = y > canvas.height * 0.5;
+                ctx.globalAlpha = near_bottom ? 0.55 + Math.random() * 0.35 : 0.2 + Math.random() * 0.25;
                 ctx.fillStyle   = palette[Math.floor(Math.random() * palette.length)];
-                ctx.globalAlpha = 0.035 + Math.random() * 0.055;
-                ctx.font        = '13px monospace';
-                ctx.fillText(Math.random() > 0.5 ? '1' : '0', i * 20, drops[i]);
+                ctx.font        = (Math.random() > 0.7 ? 15 : 12) + 'px "Share Tech Mono", monospace';
+                ctx.fillText(bit, i * COL_W, y);
                 ctx.globalAlpha = 1;
-                if (drops[i] > canvas.height && Math.random() > 0.975) drops[i] = 0;
-                drops[i] += 0.55 + Math.random() * 0.5;
+                if (y > canvas.height && Math.random() > 0.975) drops[i] = 0;
+                drops[i] += 0.28 + Math.random() * 0.22;
             }
-        }, 58);
+        }, 45);
     })();
     </script>
 
