@@ -152,11 +152,15 @@
     }
 
     // ── Connect button ─────────────────────────────────────────
+    // myAlias is stored at module scope so sendChatMessage can use it
+    let myAlias = '';
+
     document.querySelector("#receiver-start-con-btn").addEventListener("click", function(){
         const joinID = document.querySelector("#join-id").value.trim();
         if (!joinID.length) { showToast('Please enter a Room ID', 'error'); return; }
-        const alias = (document.querySelector("#receiver-alias")||{}).value||'';
-        socket.emit("receiver-join", { uid: joinID, alias });
+        const aliasInput = document.querySelector("#receiver-alias");
+        myAlias = (aliasInput && aliasInput.value.trim()) || '';
+        socket.emit("receiver-join", { uid: joinID, alias: myAlias });
         showToast('Connecting to room…', 'info');
     });
 
@@ -473,7 +477,9 @@
         const text=input.value.trim(); if(!text) return;
         const dc=window._dataChannel;
         if(!dc||dc.readyState!=='open'){showToast('Not connected — cannot send message.','error');return;}
-        dc.send(JSON.stringify({type:'chat',text,alias:'Receiver'}));
+        // Use the alias entered at join time; fall back to a short socket-derived tag
+        const displayAlias = myAlias || 'Receiver';
+        dc.send(JSON.stringify({type:'chat', text, alias: displayAlias}));
         appendChatMessage(text,'me','You'); input.value='';
     };
     document.addEventListener('keydown', e=>{if(e.key==='Enter'&&document.activeElement?.id==='chat-input') window.sendChatMessage();});

@@ -225,6 +225,30 @@
         return hasPeer; // only saturated if we have peers and all are full
     }
 
+    // ── Per-receiver chat colours ──────────────────────────────
+    // Each distinct alias (or socketId fallback) gets a stable colour so the
+    // sender can instantly tell which receiver sent a message.
+    const ALIAS_COLOURS = [
+        '#48ecc8', // teal
+        '#f59e0b', // amber
+        '#a78bfa', // violet
+        '#fb7185', // rose
+        '#34d399', // emerald
+        '#60a5fa', // blue
+        '#f97316', // orange
+        '#e879f9', // fuchsia
+    ];
+    const aliasColourMap = new Map(); // alias → CSS colour string
+    let   aliasColourIdx = 0;
+
+    function getAliasColour(alias) {
+        if (!aliasColourMap.has(alias)) {
+            aliasColourMap.set(alias, ALIAS_COLOURS[aliasColourIdx % ALIAS_COLOURS.length]);
+            aliasColourIdx++;
+        }
+        return aliasColourMap.get(alias);
+    }
+
     // ── Connection UI ──────────────────────────────────────────
     function updateConnectionUI() {
         const txt   = document.getElementById('connection-text');
@@ -473,7 +497,14 @@
         dc.onmessage = function(event) {
             if (typeof event.data === 'string') {
                 const msg = JSON.parse(event.data);
-                if (msg.type === 'chat') appendChatMessage(msg.text, 'them', msg.alias || 'Receiver');
+                if (msg.type === 'chat') {
+                    // Use the alias the receiver chose; fall back to a short socket tag
+                    const alias  = msg.alias && msg.alias !== 'Receiver'
+                                    ? msg.alias
+                                    : 'Receiver #' + receiverSocketId.slice(-4).toUpperCase();
+                    const colour = getAliasColour(alias);
+                    appendChatMessage(msg.text, 'them', alias, colour);
+                }
             }
         };
 
@@ -788,15 +819,19 @@
         if (unreadCount > 0) { badge.textContent = unreadCount > 99 ? '99+' : String(unreadCount); badge.classList.add('visible'); }
         else { badge.textContent = ''; badge.classList.remove('visible'); }
     }
-    function appendChatMessage(text, side, alias) {
+    function appendChatMessage(text, side, alias, colour) {
         const log = document.getElementById('chat-log');
         if (!log) return;
         const empty = log.querySelector('.chat-empty');
         if (empty) empty.remove();
         const div = document.createElement('div');
         div.className = 'chat-msg ' + side;
+        // For incoming messages, colour the alias uniquely per receiver
+        const aliasStyle = (side === 'them' && colour)
+            ? ` style="color:${colour}"`
+            : '';
         div.innerHTML = `
-            <div class="chat-alias">${escapeHtml(alias)}</div>
+            <div class="chat-alias"${aliasStyle}>${escapeHtml(alias)}</div>
             <div class="chat-bubble">${escapeHtml(text)}</div>
             <div class="chat-time">${new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}</div>`;
         log.appendChild(div);
