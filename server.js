@@ -63,16 +63,36 @@ const rl = {
 };
 
 // ── Security headers ───────────────────────────────────────────────────────
-// Registered BEFORE express.static — static() sends the full response for
-// .html files immediately, so any middleware registered after it never runs.
 app.use((req, res, next) => {
+    // Blocks clickjacking — no page may embed this site in an <iframe>.
     res.setHeader('X-Frame-Options', 'DENY');
+
+    // Prevents MIME-type sniffing; browser must honour the declared Content-Type.
     res.setHeader('X-Content-Type-Options', 'nosniff');
+
+    // Tells browsers to only reach this site over HTTPS for the next year.
+    // Render.com terminates TLS before this process, so this header is always safe to send.
     res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+
+    // Stops the Referer header leaking the full URL to third-party requests.
     res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+
+    // Disables browser features the app never uses.
     res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
-    // connect-src wss:/ws: covers Socket.io upgrades.
+
+    // Content-Security-Policy
+    // ─────────────────────────────────────────────────────────────────────
+    // 'unsafe-inline' is kept for script-src and style-src because the HTML
+    // files use inline <script> and <style> blocks. Removing it would require
+    // adding per-block nonces — a worthwhile follow-up, but out of scope here.
+    //
+    // connect-src covers:
+    //   • wss: / ws:  — Socket.io WebSocket upgrades
+    // WebRTC STUN traffic is handled by the browser's ICE agent, not fetch/XHR,
+    // so STUN server URLs don't need to appear in connect-src.
+    //
     // worker-src blob: covers JSZip's internal web-worker on the receiver page.
+    // ─────────────────────────────────────────────────────────────────────
     res.setHeader('Content-Security-Policy', [
         "default-src 'self'",
         "script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com",
@@ -85,10 +105,12 @@ app.use((req, res, next) => {
         "base-uri 'self'",
         "form-action 'self'",
     ].join('; '));
+
     next();
 });
 
 app.use(express.static(__dirname));
+
 
 app.get('/', (req, res) => {
     const homeFile = path.join(__dirname, 'home.html');

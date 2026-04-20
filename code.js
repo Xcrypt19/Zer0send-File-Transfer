@@ -41,7 +41,12 @@
     function showToast(message, type = 'info') {
         const toast = document.createElement('div');
         toast.className = `toast ${type}`;
-        toast.innerHTML = `<i class="fas fa-${type==='success'?'check-circle':type==='error'?'exclamation-circle':'info-circle'}"></i><span>${message}</span>`;
+        const icon = document.createElement('i');
+        icon.className = `fas fa-${type==='success'?'check-circle':type==='error'?'exclamation-circle':'info-circle'}`;
+        const span = document.createElement('span');
+        span.textContent = message;
+        toast.appendChild(icon);
+        toast.appendChild(span);
         document.getElementById('toast-container').appendChild(toast);
         setTimeout(() => {
             toast.style.animation = 'slideInRight 0.3s ease reverse';
@@ -458,12 +463,21 @@
         const eh = ec ? parseInt(ec.value) : 24;
         expiryMs = Date.now() + eh * 3600000;
         const el = eh === 1 ? '1 hour' : eh === 24 ? '24 hours' : '7 days';
-        document.querySelector("#join-id").innerHTML = `
-            <b><i class="fas fa-key"></i> Room ID</b>
-            <span onclick="copyToClipboard(this.textContent)">${joinID}</span>
-            <p style="color:var(--text-secondary);font-size:0.75rem;margin-top:0.5rem;">
-                <i class="fas fa-copy"></i> Click to copy
-            </p>`;
+        // Build the room ID display using DOM API instead of innerHTML so the
+        // joinID value is always inserted as plain text, never interpreted as HTML.
+        const joinEl = document.querySelector('#join-id');
+        joinEl.textContent = '';
+        const lbl = document.createElement('b');
+        lbl.innerHTML = '<i class="fas fa-key" aria-hidden="true"></i> Room ID';
+        const idSpan = document.createElement('span');
+        idSpan.textContent = joinID;               // safe — textContent only
+        idSpan.onclick = () => copyToClipboard(idSpan.textContent);
+        const hint = document.createElement('p');
+        hint.style.cssText = 'color:var(--text-secondary);font-size:0.75rem;margin-top:0.5rem;';
+        hint.innerHTML = '<i class="fas fa-copy" aria-hidden="true"></i> Click to copy';
+        joinEl.appendChild(lbl);
+        joinEl.appendChild(idSpan);
+        joinEl.appendChild(hint);
         const eb = document.getElementById('expiry-badge');
         if (eb) { eb.style.display = 'flex'; document.getElementById('expiry-label').textContent = `Self-destructs in ${el}`; }
         socket.emit("sender-join", { uid: joinID, masterKey: passphrase, expiryMs });

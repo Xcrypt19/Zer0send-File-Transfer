@@ -44,9 +44,12 @@
     function showToast(message, type = 'info') {
         const toast = document.createElement('div');
         toast.className = `toast ${type}`;
-        toast.innerHTML = `
-            <i class="fas fa-${type==='success'?'check-circle':type==='error'?'exclamation-circle':'info-circle'}"></i>
-            <span>${message}</span>`;
+        const icon = document.createElement('i');
+        icon.className = `fas fa-${type==='success'?'check-circle':type==='error'?'exclamation-circle':'info-circle'}`;
+        const span = document.createElement('span');
+        span.textContent = message;
+        toast.appendChild(icon);
+        toast.appendChild(span);
         document.getElementById('toast-container').appendChild(toast);
         setTimeout(() => { toast.style.animation = 'slideInRight 0.3s ease reverse'; setTimeout(() => toast.remove(), 300); }, 3000);
     }
