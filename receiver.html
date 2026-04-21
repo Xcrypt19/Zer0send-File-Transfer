@@ -2,7 +2,6 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://fonts.googleapis.com; font-src 'self' https://cdnjs.cloudflare.com https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self' wss: ws:; worker-src blob:; base-uri 'self'; form-action 'self';">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Zer0send - Receive Files</title>
     <link rel="stylesheet" href="style.css">
@@ -358,7 +357,9 @@
         </div>
     </div>
 
-    <script src="/socket.io/socket.io.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.8.1/socket.io.min.js"
+            integrity="sha512-8PhPDFwEiSfBkguGFRFfnFqCJPXnGnqNGmEUMCPgOIhqGDnfD5UYKmIFxirKpEr3qqCLmFbSHbgHGiAF5rHHQ=="
+            crossorigin="anonymous" referrerpolicy="no-referrer"></script>
     <script src="receiver.js"></script>
 
     <script>

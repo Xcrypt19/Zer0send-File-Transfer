@@ -41,14 +41,15 @@
     function showToast(message, type = 'info') {
         const toast = document.createElement('div');
         toast.className = `toast ${type}`;
-        // Build DOM nodes — never innerHTML here so file names can't inject markup
+        // Build via DOM so neither the icon class nor the message text
+        // can inject markup — message often contains user-supplied filenames.
         const icon = document.createElement('i');
         const iconClass = type === 'success' ? 'check-circle'
                         : type === 'error'   ? 'exclamation-circle'
                         : 'info-circle';
         icon.className = `fas fa-${iconClass}`;
         const span = document.createElement('span');
-        span.textContent = message;   // textContent is XSS-safe
+        span.textContent = message;
         toast.appendChild(icon);
         toast.appendChild(span);
         document.getElementById('toast-container').appendChild(toast);
@@ -287,11 +288,9 @@
                 <span class="user-dot"></span>
                 <span class="user-alias">${escapeHtml(alias)}</span>
             </div>
-            <button class="kick-btn" type="button">
+            <button class="kick-btn" onclick="kickReceiver('${escapeHtml(socketId)}')">
                 <i class="fas fa-user-slash"></i> Kick
             </button>`;
-        // Bind via addEventListener — never put socketId into an onclick attribute
-        row.querySelector('.kick-btn').addEventListener('click', () => window.kickReceiver(socketId));
         list.appendChild(row);
     }
     function removeUserRow(socketId) {
@@ -469,20 +468,20 @@
         const eh = ec ? parseInt(ec.value) : 24;
         expiryMs = Date.now() + eh * 3600000;
         const el = eh === 1 ? '1 hour' : eh === 24 ? '24 hours' : '7 days';
-        // Build join-ID display via DOM — no innerHTML with dynamic data
-        const joinIdContainer = document.querySelector("#join-id");
-        joinIdContainer.innerHTML = '';
+        // Build the Room ID block via DOM so the ID is never treated as markup.
+        const joinIdEl = document.querySelector('#join-id');
+        joinIdEl.innerHTML = '';
         const label = document.createElement('b');
         label.innerHTML = '<i class="fas fa-key"></i> Room ID';
         const idSpan = document.createElement('span');
         idSpan.textContent = joinID;
-        idSpan.addEventListener('click', () => window.copyToClipboard(joinID));
+        idSpan.addEventListener('click', () => copyToClipboard(idSpan.textContent));
         const hint = document.createElement('p');
         hint.style.cssText = 'color:var(--text-secondary);font-size:0.75rem;margin-top:0.5rem;';
         hint.innerHTML = '<i class="fas fa-copy"></i> Click to copy';
-        joinIdContainer.appendChild(label);
-        joinIdContainer.appendChild(idSpan);
-        joinIdContainer.appendChild(hint);
+        joinIdEl.appendChild(label);
+        joinIdEl.appendChild(idSpan);
+        joinIdEl.appendChild(hint);
         const eb = document.getElementById('expiry-badge');
         if (eb) { eb.style.display = 'flex'; document.getElementById('expiry-label').textContent = `Self-destructs in ${el}`; }
         socket.emit("sender-join", { uid: joinID, masterKey: passphrase, expiryMs });
@@ -880,23 +879,14 @@
         if (empty) empty.remove();
         const div = document.createElement('div');
         div.className = 'chat-msg ' + side;
-        // Build via DOM — avoids any risk from colour value injection
-        const aliasEl = document.createElement('div');
-        aliasEl.className = 'chat-alias';
-        aliasEl.textContent = alias;
-        // Only accept colour values that look like safe CSS (#hex, rgb(), or named keywords)
-        if (side === 'them' && colour && /^(#[0-9a-fA-F]{3,8}|rgb\(\s*\d+\s*,\s*\d+\s*,\s*\d+\s*\)|[a-zA-Z]+)$/.test(colour)) {
-            aliasEl.style.color = colour;
-        }
-        const bubbleEl = document.createElement('div');
-        bubbleEl.className = 'chat-bubble';
-        bubbleEl.textContent = text;
-        const timeEl = document.createElement('div');
-        timeEl.className = 'chat-time';
-        timeEl.textContent = new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
-        div.appendChild(aliasEl);
-        div.appendChild(bubbleEl);
-        div.appendChild(timeEl);
+        // For incoming messages, colour the alias uniquely per receiver
+        const aliasStyle = (side === 'them' && colour)
+            ? ` style="color:${colour}"`
+            : '';
+        div.innerHTML = `
+            <div class="chat-alias"${aliasStyle}>${escapeHtml(alias)}</div>
+            <div class="chat-bubble">${escapeHtml(text)}</div>
+            <div class="chat-time">${new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}</div>`;
         log.appendChild(div);
         scrollChatToBottom();
         if (side === 'them' && !chatOpen) {
