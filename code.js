@@ -677,15 +677,26 @@
         });
     }
 
+    // Global set of fillQueue callbacks waiting for a free read slot.
+    // When any read completes and globalActiveReads drops, we drain this.
+    const pendingFillQueues = new Set();
+
+    function onReadSlotFreed() {
+        if (pendingFillQueues.size === 0) return;
+        const toRun = Array.from(pendingFillQueues);
+        pendingFillQueues.clear();
+        toRun.forEach(fn => fn());
+    }
+
     // ── sendFile — 16 KB chunks, per-peer queues, rAF flush ────
     function sendFile(file, relativePath) {
         const fileId      = Date.now() + '-' + Math.floor(Math.random() * 1e9);
         const displayName = relativePath || file.name;
 
-        let readAhead      = 0;   // byte offset: next slice to schedule for reading
-        let sentBytes      = 0;   // byte offset: data enqueued to peer queues
-        let localQueue     = [];  // pre-read ArrayBuffers ready to enqueue
-        let activeReads    = 0;   // in-flight Blob.arrayBuffer() calls for THIS file
+        let readAhead      = 0;
+        let sentBytes      = 0;
+        let localQueue     = [];
+        let activeReads    = 0;
         let isCancelled    = false;
         const startTime    = Date.now();
 
@@ -718,6 +729,7 @@
 
         row.querySelector('.remove-file-btn').addEventListener('click', function() {
             isCancelled = true;
+            pendingFillQueues.delete(fillQueue);
             broadcastControl({ type: 'remove-file', fileId });
             row.style.transition = 'opacity 0.25s, transform 0.25s';
             row.style.opacity    = '0';
@@ -733,11 +745,31 @@
             rafPending = true;
             requestAnimationFrame(() => {
                 rafPending = false;
-                const pct = file.size > 0 ? Math.min(Math.round((sentBytes / file.size) * 100), 100) : 0;
+                const pct = file.size > 0 ? Math.min(Math.round((sentBytes / file.size) * 100), 100) : 100;
                 row.style.setProperty('--pct', pct + '%');
                 const el = row.querySelector('.file-card-pct');
                 if (el) el.textContent = pct + '%';
             });
+        }
+
+        // ── Mark this file complete and notify receivers ───────
+        function finishFile() {
+            const dur = Math.max((Date.now() - startTime) / 1000, 0.001);
+            const spd = file.size > 0 ? (file.size / dur / 1048576).toFixed(2) : '0.00';
+            broadcastControl({ type: 'done', fileId });
+            row.style.setProperty('--pct', '100%');
+            row.classList.add('send-complete');
+            const el = row.querySelector('.file-card-pct');
+            if (el) el.textContent = '✓';
+            showToast(`${file.name} sent — ${spd} MB/s (${formatTime(dur)})`, 'success');
+        }
+
+        // ── Handle zero-byte files (common in folder structures) ─
+        // fillQueue would never start since readAhead(0) < file.size(0) is false,
+        // so the 'done' message would never be sent and the receiver stalls at 0%.
+        if (file.size === 0) {
+            finishFile();
+            return;
         }
 
         // ── Enqueue all pre-read chunks to peer queues ─────────
@@ -745,7 +777,6 @@
             if (isCancelled) return;
 
             while (localQueue.length > 0) {
-                // If peer queues are saturated, pause reads and register a resume
                 if (allPeersSaturated()) {
                     pendingResumes.add(flushLocalQueue);
                     return;
@@ -757,27 +788,17 @@
                 scheduleRefreshUI();
             }
 
-            // Check for completion
             if (activeReads === 0 && localQueue.length === 0 && sentBytes >= file.size) {
-                const dur = Math.max((Date.now() - startTime) / 1000, 0.001);
-                const spd = (file.size / dur / 1048576).toFixed(2);
-                // Completion message goes AFTER all data is queued — the flush
-                // loop will drain it in order since each peer has its own queue
-                broadcastControl({ type: 'done', fileId });
-                row.style.setProperty('--pct', '100%');
-                row.classList.add('send-complete');
-                const el = row.querySelector('.file-card-pct');
-                if (el) el.textContent = '✓';
-                showToast(`${file.name} sent — ${spd} MB/s (${formatTime(dur)})`, 'success');
+                finishFile();
             } else {
-                fillQueue(); // keep the read pipeline ahead of the send position
+                fillQueue();
             }
         }
 
         // ── Read ahead: overlap disk I/O with network sends ────
         function fillQueue() {
+            if (isCancelled) return;
             while (
-                !isCancelled &&
                 globalActiveReads < MAX_GLOBAL_READS &&
                 activeReads + localQueue.length < QUEUE_DEPTH &&
                 readAhead < file.size
@@ -792,11 +813,25 @@
                     .then(buf => {
                         activeReads--;
                         globalActiveReads--;
-                        if (isCancelled) return;
+                        if (isCancelled) { onReadSlotFreed(); return; }
                         localQueue.push(buf);
+                        onReadSlotFreed(); // wake any files waiting for a read slot
                         flushLocalQueue();
                     })
-                    .catch(() => showToast(`Read error on "${file.name}"`, 'error'));
+                    .catch(() => {
+                        activeReads--;
+                        globalActiveReads--;
+                        onReadSlotFreed();
+                        showToast(`Read error on "${file.name}"`, 'error');
+                    });
+            }
+
+            // If we couldn't start any reads because the global cap is full,
+            // register this file's fillQueue to be retried when a slot frees up.
+            if (!isCancelled && readAhead < file.size &&
+                globalActiveReads >= MAX_GLOBAL_READS &&
+                activeReads + localQueue.length < QUEUE_DEPTH) {
+                pendingFillQueues.add(fillQueue);
             }
         }
 
