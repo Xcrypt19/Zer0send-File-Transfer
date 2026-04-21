@@ -126,9 +126,9 @@
                     ctx.globalAlpha=bright?0.15+Math.random()*0.2:0.05+Math.random()*0.12;
                     ctx.fillText(bit,i*18,drops[i]*18); ctx.globalAlpha=1;
                     if(drops[i]*18>canvas.height&&Math.random()>0.96) drops[i]=0;
-                    drops[i]+=0.3+Math.random()*0.35;
+                    drops[i]+=0.13+Math.random()*0.15;
                 }
-            },60);
+            },100);
         }));
         let t=0, progress=0, lastMsg='';
         _pulseInterval=setInterval(()=>{
