@@ -41,12 +41,7 @@
     function showToast(message, type = 'info') {
         const toast = document.createElement('div');
         toast.className = `toast ${type}`;
-        const icon = document.createElement('i');
-        icon.className = `fas fa-${type==='success'?'check-circle':type==='error'?'exclamation-circle':'info-circle'}`;
-        const span = document.createElement('span');
-        span.textContent = message;
-        toast.appendChild(icon);
-        toast.appendChild(span);
+        toast.innerHTML = `<i class="fas fa-${type==='success'?'check-circle':type==='error'?'exclamation-circle':'info-circle'}"></i><span>${message}</span>`;
         document.getElementById('toast-container').appendChild(toast);
         setTimeout(() => {
             toast.style.animation = 'slideInRight 0.3s ease reverse';
@@ -463,21 +458,12 @@
         const eh = ec ? parseInt(ec.value) : 24;
         expiryMs = Date.now() + eh * 3600000;
         const el = eh === 1 ? '1 hour' : eh === 24 ? '24 hours' : '7 days';
-        // Build the room ID display using DOM API instead of innerHTML so the
-        // joinID value is always inserted as plain text, never interpreted as HTML.
-        const joinEl = document.querySelector('#join-id');
-        joinEl.textContent = '';
-        const lbl = document.createElement('b');
-        lbl.innerHTML = '<i class="fas fa-key" aria-hidden="true"></i> Room ID';
-        const idSpan = document.createElement('span');
-        idSpan.textContent = joinID;               // safe — textContent only
-        idSpan.onclick = () => copyToClipboard(idSpan.textContent);
-        const hint = document.createElement('p');
-        hint.style.cssText = 'color:var(--text-secondary);font-size:0.75rem;margin-top:0.5rem;';
-        hint.innerHTML = '<i class="fas fa-copy" aria-hidden="true"></i> Click to copy';
-        joinEl.appendChild(lbl);
-        joinEl.appendChild(idSpan);
-        joinEl.appendChild(hint);
+        document.querySelector("#join-id").innerHTML = `
+            <b><i class="fas fa-key"></i> Room ID</b>
+            <span onclick="copyToClipboard(this.textContent)">${joinID}</span>
+            <p style="color:var(--text-secondary);font-size:0.75rem;margin-top:0.5rem;">
+                <i class="fas fa-copy"></i> Click to copy
+            </p>`;
         const eb = document.getElementById('expiry-badge');
         if (eb) { eb.style.display = 'flex'; document.getElementById('expiry-label').textContent = `Self-destructs in ${el}`; }
         socket.emit("sender-join", { uid: joinID, masterKey: passphrase, expiryMs });
@@ -672,15 +658,26 @@
         });
     }
 
+    // Global set of fillQueue callbacks waiting for a free read slot.
+    // When any read completes and globalActiveReads drops, we drain this.
+    const pendingFillQueues = new Set();
+
+    function onReadSlotFreed() {
+        if (pendingFillQueues.size === 0) return;
+        const toRun = Array.from(pendingFillQueues);
+        pendingFillQueues.clear();
+        toRun.forEach(fn => fn());
+    }
+
     // ── sendFile — 16 KB chunks, per-peer queues, rAF flush ────
     function sendFile(file, relativePath) {
         const fileId      = Date.now() + '-' + Math.floor(Math.random() * 1e9);
         const displayName = relativePath || file.name;
 
-        let readAhead      = 0;   // byte offset: next slice to schedule for reading
-        let sentBytes      = 0;   // byte offset: data enqueued to peer queues
-        let localQueue     = [];  // pre-read ArrayBuffers ready to enqueue
-        let activeReads    = 0;   // in-flight Blob.arrayBuffer() calls for THIS file
+        let readAhead      = 0;
+        let sentBytes      = 0;
+        let localQueue     = [];
+        let activeReads    = 0;
         let isCancelled    = false;
         const startTime    = Date.now();
 
@@ -713,6 +710,7 @@
 
         row.querySelector('.remove-file-btn').addEventListener('click', function() {
             isCancelled = true;
+            pendingFillQueues.delete(fillQueue);
             broadcastControl({ type: 'remove-file', fileId });
             row.style.transition = 'opacity 0.25s, transform 0.25s';
             row.style.opacity    = '0';
@@ -728,11 +726,31 @@
             rafPending = true;
             requestAnimationFrame(() => {
                 rafPending = false;
-                const pct = file.size > 0 ? Math.min(Math.round((sentBytes / file.size) * 100), 100) : 0;
+                const pct = file.size > 0 ? Math.min(Math.round((sentBytes / file.size) * 100), 100) : 100;
                 row.style.setProperty('--pct', pct + '%');
                 const el = row.querySelector('.file-card-pct');
                 if (el) el.textContent = pct + '%';
             });
+        }
+
+        // ── Mark this file complete and notify receivers ───────
+        function finishFile() {
+            const dur = Math.max((Date.now() - startTime) / 1000, 0.001);
+            const spd = file.size > 0 ? (file.size / dur / 1048576).toFixed(2) : '0.00';
+            broadcastControl({ type: 'done', fileId });
+            row.style.setProperty('--pct', '100%');
+            row.classList.add('send-complete');
+            const el = row.querySelector('.file-card-pct');
+            if (el) el.textContent = '✓';
+            showToast(`${file.name} sent — ${spd} MB/s (${formatTime(dur)})`, 'success');
+        }
+
+        // ── Handle zero-byte files (common in folder structures) ─
+        // fillQueue would never start since readAhead(0) < file.size(0) is false,
+        // so the 'done' message would never be sent and the receiver stalls at 0%.
+        if (file.size === 0) {
+            finishFile();
+            return;
         }
 
         // ── Enqueue all pre-read chunks to peer queues ─────────
@@ -740,7 +758,6 @@
             if (isCancelled) return;
 
             while (localQueue.length > 0) {
-                // If peer queues are saturated, pause reads and register a resume
                 if (allPeersSaturated()) {
                     pendingResumes.add(flushLocalQueue);
                     return;
@@ -752,27 +769,17 @@
                 scheduleRefreshUI();
             }
 
-            // Check for completion
             if (activeReads === 0 && localQueue.length === 0 && sentBytes >= file.size) {
-                const dur = Math.max((Date.now() - startTime) / 1000, 0.001);
-                const spd = (file.size / dur / 1048576).toFixed(2);
-                // Completion message goes AFTER all data is queued — the flush
-                // loop will drain it in order since each peer has its own queue
-                broadcastControl({ type: 'done', fileId });
-                row.style.setProperty('--pct', '100%');
-                row.classList.add('send-complete');
-                const el = row.querySelector('.file-card-pct');
-                if (el) el.textContent = '✓';
-                showToast(`${file.name} sent — ${spd} MB/s (${formatTime(dur)})`, 'success');
+                finishFile();
             } else {
-                fillQueue(); // keep the read pipeline ahead of the send position
+                fillQueue();
             }
         }
 
         // ── Read ahead: overlap disk I/O with network sends ────
         function fillQueue() {
+            if (isCancelled) return;
             while (
-                !isCancelled &&
                 globalActiveReads < MAX_GLOBAL_READS &&
                 activeReads + localQueue.length < QUEUE_DEPTH &&
                 readAhead < file.size
@@ -787,11 +794,25 @@
                     .then(buf => {
                         activeReads--;
                         globalActiveReads--;
-                        if (isCancelled) return;
+                        if (isCancelled) { onReadSlotFreed(); return; }
                         localQueue.push(buf);
+                        onReadSlotFreed(); // wake any files waiting for a read slot
                         flushLocalQueue();
                     })
-                    .catch(() => showToast(`Read error on "${file.name}"`, 'error'));
+                    .catch(() => {
+                        activeReads--;
+                        globalActiveReads--;
+                        onReadSlotFreed();
+                        showToast(`Read error on "${file.name}"`, 'error');
+                    });
+            }
+
+            // If we couldn't start any reads because the global cap is full,
+            // register this file's fillQueue to be retried when a slot frees up.
+            if (!isCancelled && readAhead < file.size &&
+                globalActiveReads >= MAX_GLOBAL_READS &&
+                activeReads + localQueue.length < QUEUE_DEPTH) {
+                pendingFillQueues.add(fillQueue);
             }
         }
 
