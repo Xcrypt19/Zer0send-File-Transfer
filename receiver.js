@@ -44,9 +44,16 @@
     function showToast(message, type = 'info') {
         const toast = document.createElement('div');
         toast.className = `toast ${type}`;
-        toast.innerHTML = `
-            <i class="fas fa-${type==='success'?'check-circle':type==='error'?'exclamation-circle':'info-circle'}"></i>
-            <span>${message}</span>`;
+        // DOM construction — message is always plain text, never markup
+        const icon = document.createElement('i');
+        const iconClass = type === 'success' ? 'check-circle'
+                        : type === 'error'   ? 'exclamation-circle'
+                        : 'info-circle';
+        icon.className = `fas fa-${iconClass}`;
+        const span = document.createElement('span');
+        span.textContent = message;
+        toast.appendChild(icon);
+        toast.appendChild(span);
         document.getElementById('toast-container').appendChild(toast);
         setTimeout(() => { toast.style.animation = 'slideInRight 0.3s ease reverse'; setTimeout(() => toast.remove(), 300); }, 3000);
     }
@@ -317,21 +324,40 @@
         const band=document.getElementById('expiry-band');
         if(band){band.style.display='flex';const l=document.getElementById('expiry-label');if(l)l.textContent='Session self-destructs in:';}
         if(meta.expiryMs) startExpiryCountdown(meta.expiryMs);
-        showToast(`Session secured. Expires in ${meta.expiryLabel||'...'}${meta.masterKey?' · Passphrase verified ✓':''}`, 'success');
-        // Update status to connected
+        // escapeHtml guards expiryLabel — it comes from the sender over the data channel
+        const safeLabel = escapeHtml(String(meta.expiryLabel || '...').slice(0, 32));
+        const passNote  = meta.masterKey ? ' · Passphrase verified ✓' : '';
+        showToast(`Session secured. Expires in ${safeLabel}${passNote}`, 'success');
         const si=document.querySelector('.status-indicator');
         if(si){si.classList.remove('waiting','disconnected');si.classList.add('connected');}
         const ct=document.getElementById('connection-text');
         if(ct) ct.textContent='Connected to sender';
     }
 
+    // ── Metadata sanitisation ──────────────────────────────────
+    // All fields come from the sender over the data channel and must be treated
+    // as untrusted. We clamp lengths and strip control characters before any
+    // value touches the DOM or is stored.
+    function sanitiseMeta(raw) {
+        const str = (v, max) => String(v || '').replace(/[\x00-\x1f\x7f]/g, '').slice(0, max);
+        return {
+            fileId:       str(raw.fileId,       64).replace(/[^a-zA-Z0-9\-]/g, ''),
+            fileName:     str(raw.fileName,     255) || 'unnamed',
+            fileSize:     Math.max(0, parseInt(raw.fileSize) || 0),
+            fileType:     str(raw.fileType,     128) || 'application/octet-stream',
+            // Strip path traversal sequences from relative paths
+            relativePath: str(raw.relativePath, 512).replace(/\.\.[/\\]/g, '').replace(/^[/\\]+/, ''),
+        };
+    }
+
     // ── File receiving ─────────────────────────────────────────
-    function startFileReceive(metadata) {
+    function startFileReceive(rawMetadata) {
+        const metadata = sanitiseMeta(rawMetadata);
         const ws=document.getElementById('waiting-section');
         if(ws) ws.style.display='none';
         const dl={
             fileId: metadata.fileId, fileName: metadata.fileName, fileSize: metadata.fileSize,
-            fileType: metadata.fileType||'application/octet-stream', relativePath: metadata.relativePath||'',
+            fileType: metadata.fileType, relativePath: metadata.relativePath,
             chunks: [], receivedBytes: 0, startTime: Date.now(), completed: false
         };
         activeDownloads.set(metadata.fileId, dl);
@@ -349,7 +375,8 @@
             </div>`;
         document.querySelector('.files-list').appendChild(row);
         fileCount++; updateFileCount();
-        showToast(`Receiving ${displayName}…`, 'info');
+        // escapeHtml guards against file names that contain angle brackets in the toast
+        showToast(`Receiving ${escapeHtml(displayName)}…`, 'info');
     }
 
     function handleFileChunk(data) {
@@ -393,7 +420,8 @@
                 URL.revokeObjectURL(a.href);
             });
         }
-        showToast(`${dl.relativePath||dl.fileName} ready — ${spd} MB/s (${formatTime(dur)})`, 'success');
+        // escapeHtml guards the file name — it's sender-controlled data
+        showToast(`${escapeHtml(dl.relativePath||dl.fileName)} ready — ${spd} MB/s (${formatTime(dur)})`, 'success');
         activeDownloads.delete(fileId);
     }
 
@@ -423,9 +451,9 @@
             await new Promise((res,rej)=>{
                 const s=document.createElement('script');
                 s.src='https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js';
+                // SRI prevents a compromised CDN from injecting malicious code
                 s.integrity='sha512-XMVd28F1oH/O71fzwBnV7HucLxVwtxf26XV8P4wPk26EDxuGZ91N8bsOttmnomcCD3CS5ZMRL50H0GgOHvegtg==';
                 s.crossOrigin='anonymous';
-                s.referrerPolicy='no-referrer';
                 s.onload=res; s.onerror=rej; document.head.appendChild(s);
             });
         }

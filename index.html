@@ -5,7 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Zer0send — Secure P2P File Sharing</title>
     <link rel="stylesheet" href="style.css">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" integrity="sha384-iw3OoTErCYJJB9mCa8LNS2hbsQ7M3C0EpIsO/H5+EGAkPGc6rk+V8i04oW/K5xq0" crossorigin="anonymous">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css"
+          integrity="sha512-iecdLmaskl7CVkqkXNQ/ZH/XLlvWZOJyj7Yy7tcenmpD1ypASozpmT/E0iPtmFIB46ZmdtAc9eNBvH0H/ZpiBw=="
+          crossorigin="anonymous" referrerpolicy="no-referrer">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;700;900&family=Share+Tech+Mono&display=swap" rel="stylesheet">
@@ -506,38 +508,34 @@
     <!-- ── Background matrix canvas ─────────────────────────────── -->
     <script>
     (function(){
-        var canvas = document.getElementById('bg-matrix');
-        var ctx    = canvas.getContext('2d');
-        var palette = ['#40c21c','#57d42e','#84f163','#48ecc8','#1eff00','#2dba16','#3cd426'];
-        var COL_W = 20, drops = [];
+        const canvas  = document.getElementById('bg-matrix');
+        const ctx     = canvas.getContext('2d');
+        const palette = ['#40c21c','#57d42e','#84f163','#48ecc8','#1eff00','#2dba16','#3cd426'];
 
-        function resize(){
-            canvas.width  = window.innerWidth;
-            canvas.height = window.innerHeight;
-        }
-        function initDrops(){
-            var cols = Math.floor(canvas.width / COL_W);
-            drops = Array.from({length: cols}, function(){ return Math.random() * -(canvas.height / 16); });
-        }
-        resize(); initDrops();
-        window.addEventListener('resize', function(){ resize(); initDrops(); });
+        function resize(){ canvas.width=window.innerWidth; canvas.height=window.innerHeight; }
+        resize(); window.addEventListener('resize', resize);
 
-        setInterval(function(){
-            ctx.fillStyle = 'rgba(6,18,4,0.18)';
-            ctx.fillRect(0, 0, canvas.width, canvas.height);
-            for (var i = 0; i < drops.length; i++) {
-                var y = drops[i] * 16;
-                var bit = Math.random() > 0.5 ? '1' : '0';
-                var near_bottom = y > canvas.height * 0.5;
-                ctx.globalAlpha = near_bottom ? 0.55 + Math.random() * 0.35 : 0.2 + Math.random() * 0.25;
-                ctx.fillStyle   = palette[Math.floor(Math.random() * palette.length)];
-                ctx.font        = (Math.random() > 0.7 ? 15 : 12) + 'px "Share Tech Mono", monospace';
-                ctx.fillText(bit, i * COL_W, y);
-                ctx.globalAlpha = 1;
-                if (y > canvas.height && Math.random() > 0.975) drops[i] = 0;
-                drops[i] += 0.28 + Math.random() * 0.22;
+        const COL_W = 20;
+        let drops = [];
+        function initDrops(){ drops=Array.from({length:Math.floor(canvas.width/COL_W)},()=>Math.random()*(-(canvas.height/16))); }
+        initDrops(); window.addEventListener('resize', initDrops);
+
+        function draw(){
+            ctx.fillStyle='rgba(6,18,4,0.18)';
+            ctx.fillRect(0,0,canvas.width,canvas.height);
+            for(let i=0;i<drops.length;i++){
+                const y=drops[i]*16, bit=Math.random()>0.5?'1':'0';
+                const near_bottom=y>canvas.height*0.5;
+                ctx.globalAlpha=near_bottom?0.55+Math.random()*0.35:0.2+Math.random()*0.25;
+                ctx.fillStyle=palette[Math.floor(Math.random()*palette.length)];
+                ctx.font=(Math.random()>0.7?15:12)+'px "Share Tech Mono", monospace';
+                ctx.fillText(bit,i*COL_W,y);
+                ctx.globalAlpha=1;
+                if(y>canvas.height&&Math.random()>0.975) drops[i]=0;
+                drops[i]+=0.28+Math.random()*0.22;
             }
-        }, 45);
+        }
+        setInterval(draw,45);
     })();
     </script>
 
