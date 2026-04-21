@@ -62,6 +62,8 @@ const rl = {
     kick:         makeRateLimiter(20, 60_000),
 };
 
+app.use(express.static(__dirname));
+
 // ── Security headers ───────────────────────────────────────────────────────
 app.use((req, res, next) => {
     // Blocks clickjacking — no page may embed this site in an <iframe>.
@@ -108,9 +110,6 @@ app.use((req, res, next) => {
 
     next();
 });
-
-app.use(express.static(__dirname));
-
 
 app.get('/', (req, res) => {
     const homeFile = path.join(__dirname, 'home.html');
