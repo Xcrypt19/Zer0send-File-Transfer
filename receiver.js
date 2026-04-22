@@ -183,6 +183,11 @@
         peerConnection.ondatachannel = function(event){
             const dataChannel = event.channel;
 
+            // RTCDataChannel defaults binaryType to 'blob'. unpackChunk expects an
+            // ArrayBuffer — Uint8Array(blob) produces an empty view, causing every
+            // binary chunk to be silently dropped (images truncated, videos unplayable).
+            dataChannel.binaryType = 'arraybuffer';
+
             dataChannel.onmessage = function(event){
                 if (typeof event.data === 'string') {
                     const msg = JSON.parse(event.data);
