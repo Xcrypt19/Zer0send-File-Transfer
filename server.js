@@ -2,6 +2,9 @@ const express = require('express');
 const app = express();
 const http = require('http').createServer(app);
 
+// Suppress the X-Powered-By: Express header — leaks framework info to attackers.
+app.disable('x-powered-by');
+
 // Lock signalling to the production origin.
 // Set ALLOWED_ORIGIN env var to override for local dev (e.g. http://localhost:3000).
 const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || 'https://zer0send.onrender.com';
@@ -62,9 +65,12 @@ const rl = {
     kick:         makeRateLimiter(20, 60_000),
 };
 
-app.use(express.static(__dirname));
-
 // ── Security headers ───────────────────────────────────────────────────────
+// IMPORTANT: this middleware must be registered BEFORE express.static so that
+// every response — including static files — carries the full header set.
+// Placing it after express.static means static responses bypass all headers,
+// which is what caused the CSP, HSTS, X-Frame-Options, and X-Content-Type-Options
+// findings in the ZAP audit.
 app.use((req, res, next) => {
     // Blocks clickjacking — no page may embed this site in an <iframe>.
     res.setHeader('X-Frame-Options', 'DENY');
@@ -94,6 +100,9 @@ app.use((req, res, next) => {
     // so STUN server URLs don't need to appear in connect-src.
     //
     // worker-src blob: covers JSZip's internal web-worker on the receiver page.
+    //
+    // frame-ancestors and form-action do NOT fall back to default-src per the
+    // CSP spec, so they must always be listed explicitly.
     // ─────────────────────────────────────────────────────────────────────
     res.setHeader('Content-Security-Policy', [
         "default-src 'self'",
@@ -111,14 +120,40 @@ app.use((req, res, next) => {
     next();
 });
 
+// ── Static files ───────────────────────────────────────────────────────────
+// etag: false + lastModified: false — the default ETag format embeds the
+// file's mtime as a hex value (e.g. W/"8673-19db3b02230"), which leaks
+// server-side filesystem timestamps. Disabling both removes that disclosure.
+// Browsers will re-validate on each deployment, which is correct behaviour
+// for an app served via Render where files change only on deploy.
+app.use(express.static(__dirname, { etag: false, lastModified: false }));
+
+// ── robots.txt ─────────────────────────────────────────────────────────────
+// Explicitly handled so it returns 200 with a proper CSP rather than a 404.
+// Disallow session pages from indexing — they're useless without a live room.
+app.get('/robots.txt', (req, res) => {
+    res.type('text/plain');
+    res.send('User-agent: *\nDisallow: /sender\nDisallow: /receiver\n');
+});
+
 app.get('/', (req, res) => {
     const homeFile = path.join(__dirname, 'home.html');
     const fs = require('fs');
     if (fs.existsSync(homeFile)) res.sendFile(homeFile);
     else res.redirect('/sender');
 });
-app.get('/sender', (req, res) => res.sendFile(path.join(__dirname, 'sender.html')));
-app.get('/receiver', (req, res) => res.sendFile(path.join(__dirname, 'receiver.html')));
+
+// Cache-Control: no-store on session pages so browsers never cache sender/
+// receiver HTML. These pages hold live WebRTC state; a stale cached copy
+// would connect to a dead room. ZAP also flagged public caching of these pages.
+app.get('/sender',   (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    res.sendFile(path.join(__dirname, 'sender.html'));
+});
+app.get('/receiver', (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    res.sendFile(path.join(__dirname, 'receiver.html'));
+});
 
 // uid  ->  sender socket.id
 const senders = {};
