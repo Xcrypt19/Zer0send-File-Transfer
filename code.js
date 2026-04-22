@@ -107,9 +107,10 @@
     //
     // Architecture (per the SCTP analysis):
     //
-    //   CHUNK = 16 KB
-    //     Fits in a single SCTP message → no fragmentation, no head-of-line
-    //     blocking inside the browser's SCTP stack.
+    //   CHUNK = 64 KB
+    //     Fits comfortably in a single SCTP message on all modern browsers.
+    //     4× larger than the previous 16 KB, meaning 4× fewer messages and
+    //     significantly lower per-message overhead on large transfers.
     //
     //   Per-peer send queues (peerQueues)
     //     Each peer has its own outbound queue of packed ArrayBuffers.
@@ -121,10 +122,10 @@
     //     preventing the event-loop starvation that kills connections.
     //
     //   Per-peer back-pressure
-    //     Pause sending to a channel when bufferedAmount > BUFFER_SOFT (2 MB).
-    //     Resume via bufferedAmountLowThreshold = BUFFER_LOW (256 KB).
+    //     Pause sending to a channel when bufferedAmount > BUFFER_SOFT (8 MB).
+    //     Resume via bufferedAmountLowThreshold = BUFFER_LOW (1 MB).
     //
-    //   Global read cap (MAX_GLOBAL_READS = 4)
+    //   Global read cap (MAX_GLOBAL_READS = 8)
     //     Prevents memory exhaustion when many files are dropped at once.
     //
     //   Binary chunk header (24 bytes)
@@ -132,12 +133,15 @@
     //     The receiver parses the header to route chunks to the correct
     //     download by fileId, fixing multi-file interleave corruption.
     //
-    const CHUNK            = 16384;    // 16 KB — one SCTP message, no fragmentation
-    const QUEUE_DEPTH      = 8;        // pre-read chunks per file (8 × 16 KB = 128 KB)
-    const BUFFER_SOFT      = 2097152;  // 2 MB — stop sending to a channel above this
-    const BUFFER_LOW       = 262144;   // 256 KB — resume threshold
-    const MAX_GLOBAL_READS = 4;        // max concurrent file reads across all transfers
-    const HEADER_LEN       = 24;       // bytes reserved for ASCII fileId header
+    const CHUNK            = 65536;    // 64 KB — safe SCTP message size on all modern browsers;
+                                       // 4x fewer messages vs 16 KB = significantly lower overhead
+    const QUEUE_DEPTH      = 64;       // pre-read chunks per file (64 x 64 KB = 4 MB read-ahead);
+                                       // keeps the I/O pipeline full so the send loop never stalls
+                                       // waiting for the next disk read to complete
+    const BUFFER_SOFT      = 8388608;  // 8 MB — stop sending to a channel above this
+    const BUFFER_LOW       = 1048576;  // 1 MB — resume threshold (was 256 KB)
+    const MAX_GLOBAL_READS = 8;        // max concurrent file reads across all transfers (was 4)
+    const HEADER_LEN       = 24;       // bytes reserved for ASCII fileId header (unchanged)
 
     // Per-peer outbound queues: socketId → ArrayBuffer[]
     const peerQueues = new Map();
@@ -773,7 +777,24 @@
         function finishFile() {
             const dur = Math.max((Date.now() - startTime) / 1000, 0.001);
             const spd = file.size > 0 ? (file.size / dur / 1048576).toFixed(2) : '0.00';
-            broadcastControl({ type: 'done', fileId });
+
+            // IMPORTANT: do NOT use broadcastControl() here.
+            // broadcastControl calls dataChannel.send() synchronously, which writes
+            // 'done' straight to the SCTP stack. At this point the binary chunks for
+            // this file are still sitting in peerQueues waiting for the next rAF flush.
+            // SCTP would deliver 'done' first, the receiver would assemble a truncated
+            // blob, and the final chunks would arrive as orphaned data for an unknown
+            // fileId.  Enqueuing 'done' into peerQueues keeps it strictly ordered
+            // behind all binary chunks — flush() calls dc.send() for both strings and
+            // ArrayBuffers, so no other change is needed in the flush loop.
+            const doneMsg = JSON.stringify({ type: 'done', fileId });
+            peers.forEach(({ dataChannel }, socketId) => {
+                if (!dataChannel || dataChannel.readyState !== 'open') return;
+                if (!peerQueues.has(socketId)) peerQueues.set(socketId, []);
+                peerQueues.get(socketId).push(doneMsg);
+            });
+            scheduleFlush();
+
             row.style.setProperty('--pct', '100%');
             row.classList.add('send-complete');
             const el = row.querySelector('.file-card-pct');

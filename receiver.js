@@ -401,8 +401,57 @@
             const el=row.querySelector('.file-card-pct');
             if(el) el.textContent=pct+'%';
         }
-        // Consolidate small ArrayBuffers periodically to control memory
-        if (dl.chunks.length > 200) dl.chunks=[new Blob(dl.chunks,{type:dl.fileType})];
+        // Consolidate accumulated ArrayBuffers into a single Blob periodically to
+        // control GC pressure. Threshold scales with chunk size: ~3 MB per flush
+        // (50 x 64 KB chunks, matching the old 200 x 16 KB = 3.2 MB behaviour).
+        if (dl.chunks.length > 50) dl.chunks=[new Blob(dl.chunks,{type:dl.fileType})];
+    }
+
+    // ── Download helper ────────────────────────────────────────
+    // Handles three problem areas in the naive a.click() approach:
+    //
+    // 1. Immediate URL revocation: the original code called revokeObjectURL()
+    //    synchronously after click(). iOS Safari's download is async — the URL
+    //    is invalid before iOS can load the resource, so nothing is saved.
+    //    Fix: revoke after a 60-second delay, giving the OS time to open the file.
+    //
+    // 2. Anchor not in DOM: Firefox and some mobile browsers silently ignore
+    //    click() on elements that are not attached to the document.
+    //    Fix: append, click, then immediately remove from DOM.
+    //
+    // 3. iOS Safari <a download> support: iOS Safari ignores the `download`
+    //    attribute for most MIME types and shows a blank page or does nothing.
+    //    Fix: detect iOS and open the blob URL in a new tab instead. iOS will
+    //    display the file inline (images, PDFs) or show a Share / Save to Files
+    //    prompt, which is the closest iOS equivalent of a file download.
+    function triggerDownload(blob, fileName) {
+        const url = URL.createObjectURL(blob);
+        const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+        if (isIOS) {
+            // window.open must be called synchronously from a user-gesture handler.
+            // It opens the blob URL in a new tab; iOS shows its native share sheet
+            // from which the user can choose Save to Files, AirDrop, Mail, etc.
+            const win = window.open(url, '_blank');
+            if (!win) {
+                // Popup was blocked (unlikely from a direct click but possible).
+                // Fall through to the anchor method as a best-effort fallback.
+                const a = document.createElement('a');
+                a.href = url; a.download = fileName; a.rel = 'noopener';
+                document.body.appendChild(a); a.click(); document.body.removeChild(a);
+            }
+            // Keep the URL alive long enough for iOS to finish loading the resource.
+            setTimeout(() => URL.revokeObjectURL(url), 60000);
+        } else {
+            const a = document.createElement('a');
+            a.href = url; a.download = fileName; a.rel = 'noopener';
+            // Must be in DOM for Firefox compatibility.
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            // Delay revocation — some browsers (especially on slower machines)
+            // process the download asynchronously after click() returns.
+            setTimeout(() => URL.revokeObjectURL(url), 30000);
+        }
     }
 
     function completeFileReceive(fileId) {
@@ -421,9 +470,7 @@
             if(el) el.innerHTML='<i class="fas fa-arrow-down"></i>';
             row.title='Click to download';
             row.addEventListener('click',function(){
-                const a=document.createElement('a');
-                a.href=URL.createObjectURL(finalBlob); a.download=dl.fileName; a.click();
-                URL.revokeObjectURL(a.href);
+                triggerDownload(finalBlob, dl.fileName);
             });
         }
         // escapeHtml guards the file name — it's sender-controlled data
@@ -467,9 +514,7 @@
         completedFiles.forEach(({fileName,relativePath,blob})=>zip.file(relativePath||fileName,blob));
         try {
             const content=await zip.generateAsync({type:'blob',compression:'DEFLATE',compressionOptions:{level:3}});
-            const a=document.createElement('a');
-            a.href=URL.createObjectURL(content); a.download='zer0send-files.zip'; a.click();
-            URL.revokeObjectURL(a.href);
+            triggerDownload(content, 'zer0send-files.zip');
             showToast(`Downloaded ${completedFiles.size} files as ZIP!`, 'success');
         } catch(err) { showToast('ZIP error: '+err.message,'error'); }
         finally {
