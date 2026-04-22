@@ -155,6 +155,11 @@ app.get('/receiver', (req, res) => {
     res.sendFile(path.join(__dirname, 'receiver.html'));
 });
 
+// ── Room / receiver caps ───────────────────────────────────────────────────
+// Prevents unbounded memory growth from attacker-controlled socket churn.
+const MAX_ROOMS              = 500;   // global concurrent room limit
+const MAX_RECEIVERS_PER_ROOM = 20;    // per-room receiver limit
+
 // uid  ->  sender socket.id
 const senders = {};
 
@@ -163,6 +168,11 @@ const roomReceivers = {};
 
 // receiverSocketId  ->  uid  (reverse lookup)
 const receiverRooms = {};
+
+// socketId  ->  uid  (covers BOTH senders and receivers for signalling auth)
+// Used to verify that offer/answer/candidate events come from a socket that
+// actually belongs to the room it claims to be addressing.
+const socketRooms = {};
 
 function broadcastReceiverList(uid) {
     const senderSocketId = senders[uid];
@@ -177,7 +187,6 @@ function broadcastReceiverList(uid) {
 }
 
 io.on('connection', (socket) => {
-    console.log('New connection:', socket.id);
 
     // Sender joins ------------------------------------------------
     socket.on('sender-join', (data) => {
@@ -189,8 +198,12 @@ io.on('connection', (socket) => {
             socket.emit('error', { message: 'Invalid room ID format.' });
             return;
         }
-        console.log('Sender joined room:', data.uid);
+        if (Object.keys(senders).length >= MAX_ROOMS) {
+            socket.emit('error', { message: 'Server is at capacity — please try again later.' });
+            return;
+        }
         senders[data.uid] = socket.id;
+        socketRooms[socket.id] = data.uid;
         roomReceivers[data.uid] = roomReceivers[data.uid] || new Map();
         socket.join(data.uid);
     });
@@ -205,17 +218,21 @@ io.on('connection', (socket) => {
             socket.emit('error', { message: 'Invalid room ID format.' });
             return;
         }
-        console.log('Receiver joining room:', data.uid);
         const senderSocketId = senders[data.uid];
         if (!senderSocketId) {
             socket.emit('error', { message: 'Invalid room ID — no sender found.' });
             return;
         }
         if (!roomReceivers[data.uid]) roomReceivers[data.uid] = new Map();
+        if (roomReceivers[data.uid].size >= MAX_RECEIVERS_PER_ROOM) {
+            socket.emit('error', { message: 'Room is full — maximum receivers reached.' });
+            return;
+        }
         // Clamp alias to 32 chars so a huge string can't bloat the receiver list payload
         const alias = (typeof data.alias === 'string' ? data.alias.slice(0, 32).trim() : '') || ('User-' + socket.id.slice(-4).toUpperCase());
         roomReceivers[data.uid].set(socket.id, { alias, joinedAt: Date.now() });
         receiverRooms[socket.id] = data.uid;
+        socketRooms[socket.id]   = data.uid;
         socket.join(data.uid);
 
         // Tell the receiver who the sender is
@@ -229,14 +246,19 @@ io.on('connection', (socket) => {
     // WebRTC signalling -------------------------------------------
     socket.on('offer', (data) => {
         if (!rl.offer(socket.id) || !data || typeof data.uid !== 'string') return;
+        // Verify the emitting socket actually belongs to the target room.
+        // Without this check any socket could inject offers into any room.
+        if (socketRooms[socket.id] !== data.uid) return;
         socket.to(data.uid).emit('offer', { offer: data.offer, uid: socket.id });
     });
     socket.on('answer', (data) => {
         if (!rl.answer(socket.id) || !data || typeof data.uid !== 'string') return;
+        if (socketRooms[socket.id] !== data.uid) return;
         socket.to(data.uid).emit('answer', { answer: data.answer, uid: socket.id });
     });
     socket.on('candidate', (data) => {
         if (!rl.candidate(socket.id) || !data || typeof data.uid !== 'string') return;
+        if (socketRooms[socket.id] !== data.uid) return;
         socket.to(data.uid).emit('candidate', { candidate: data.candidate, uid: socket.id });
     });
 
@@ -245,26 +267,30 @@ io.on('connection', (socket) => {
         if (!rl.kick(socket.id) || !data || typeof data.uid !== 'string') return;
         const { receiverSocketId, uid } = data;
         if (senders[uid] !== socket.id) return;   // only the room owner can kick
+        // Verify the target socket is actually in this room — prevents a sender
+        // from emitting 'kicked' to arbitrary sockets in unrelated rooms.
+        if (!roomReceivers[uid] || !roomReceivers[uid].has(receiverSocketId)) return;
         const target = io.sockets.sockets.get(receiverSocketId);
         if (target) target.emit('kicked', { reason: 'You have been removed by the sender.' });
-        if (roomReceivers[uid]) roomReceivers[uid].delete(receiverSocketId);
+        roomReceivers[uid].delete(receiverSocketId);
         delete receiverRooms[receiverSocketId];
+        delete socketRooms[receiverSocketId];
         broadcastReceiverList(uid);
     });
 
     // Disconnect --------------------------------------------------
     socket.on('disconnect', () => {
-        console.log('Disconnected:', socket.id);
-
         // Was it a sender?
         for (const uid in senders) {
             if (senders[uid] === socket.id) {
                 delete senders[uid];
+                delete socketRooms[socket.id];
                 if (roomReceivers[uid]) {
                     roomReceivers[uid].forEach((_info, rid) => {
                         const rs = io.sockets.sockets.get(rid);
                         if (rs) rs.emit('sender-disconnected');
                         delete receiverRooms[rid];
+                        delete socketRooms[rid];
                     });
                     delete roomReceivers[uid];
                 }
@@ -283,6 +309,7 @@ io.on('connection', (socket) => {
                 }
             }
             delete receiverRooms[socket.id];
+            delete socketRooms[socket.id];
         }
     });
 });

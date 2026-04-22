@@ -190,7 +190,8 @@
 
             dataChannel.onmessage = function(event){
                 if (typeof event.data === 'string') {
-                    const msg = JSON.parse(event.data);
+                    let msg;
+                    try { msg = JSON.parse(event.data); } catch(e) { return; }
                     if      (msg.type === 'metadata')     startFileReceive(msg.data);
                     else if (msg.type === 'done')         completeFileReceive(msg.fileId);
                     else if (msg.type === 'remove-file')  removeFileItem(msg.fileId);

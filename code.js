@@ -280,17 +280,34 @@
         if (!list || document.getElementById('user-row-' + socketId)) return;
         const msg = document.getElementById('no-users-msg');
         if (msg) msg.style.display = 'none';
+
         const row = document.createElement('div');
         row.className = 'user-row';
         row.id = 'user-row-' + socketId;
-        row.innerHTML = `
-            <div class="user-row-info">
-                <span class="user-dot"></span>
-                <span class="user-alias">${escapeHtml(alias)}</span>
-            </div>
-            <button class="kick-btn" onclick="kickReceiver('${escapeHtml(socketId)}')">
-                <i class="fas fa-user-slash"></i> Kick
-            </button>`;
+
+        // Build the row via DOM — never via innerHTML — so neither the alias nor
+        // the socketId can break out of their text context and inject markup or JS.
+        const info = document.createElement('div');
+        info.className = 'user-row-info';
+        const dot = document.createElement('span');
+        dot.className = 'user-dot';
+        const aliasSpan = document.createElement('span');
+        aliasSpan.className = 'user-alias';
+        aliasSpan.textContent = alias;
+        info.appendChild(dot);
+        info.appendChild(aliasSpan);
+
+        const btn = document.createElement('button');
+        btn.className = 'kick-btn';
+        // Store the ID in a data attribute — never interpolated into JS string context.
+        btn.dataset.socketId = socketId;
+        btn.innerHTML = '<i class="fas fa-user-slash"></i> Kick';
+        btn.addEventListener('click', function() {
+            window.kickReceiver(this.dataset.socketId);
+        });
+
+        row.appendChild(info);
+        row.appendChild(btn);
         list.appendChild(row);
     }
     function removeUserRow(socketId) {
@@ -514,7 +531,8 @@
 
         dc.onmessage = function(event) {
             if (typeof event.data === 'string') {
-                const msg = JSON.parse(event.data);
+                let msg;
+                try { msg = JSON.parse(event.data); } catch(e) { return; }
                 if (msg.type === 'chat') {
                     // Use the alias the receiver chose; fall back to a short socket tag
                     const alias  = msg.alias && msg.alias !== 'Receiver'
