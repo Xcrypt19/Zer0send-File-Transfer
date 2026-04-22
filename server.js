@@ -244,21 +244,35 @@ io.on('connection', (socket) => {
     });
 
     // WebRTC signalling -------------------------------------------
+    // data.uid here is the TARGET socket ID (not a room UID). The server routes
+    // each message directly to that peer with socket.to(socketId).
+    //
+    // Security requirement: both the emitting socket AND the target socket must
+    // be registered in the same room. Without this check, any socket could inject
+    // offers/answers/candidates into a peer connection in a completely different room.
+    //
+    // We look up both sides in socketRooms and require them to match.
+    // If either side has no entry the message is dropped — that covers the case
+    // of a socket that never legitimately joined any room.
     socket.on('offer', (data) => {
         if (!rl.offer(socket.id) || !data || typeof data.uid !== 'string') return;
-        // Verify the emitting socket actually belongs to the target room.
-        // Without this check any socket could inject offers into any room.
-        if (socketRooms[socket.id] !== data.uid) return;
+        const myRoom     = socketRooms[socket.id];
+        const targetRoom = socketRooms[data.uid];
+        if (!myRoom || !targetRoom || myRoom !== targetRoom) return;
         socket.to(data.uid).emit('offer', { offer: data.offer, uid: socket.id });
     });
     socket.on('answer', (data) => {
         if (!rl.answer(socket.id) || !data || typeof data.uid !== 'string') return;
-        if (socketRooms[socket.id] !== data.uid) return;
+        const myRoom     = socketRooms[socket.id];
+        const targetRoom = socketRooms[data.uid];
+        if (!myRoom || !targetRoom || myRoom !== targetRoom) return;
         socket.to(data.uid).emit('answer', { answer: data.answer, uid: socket.id });
     });
     socket.on('candidate', (data) => {
         if (!rl.candidate(socket.id) || !data || typeof data.uid !== 'string') return;
-        if (socketRooms[socket.id] !== data.uid) return;
+        const myRoom     = socketRooms[socket.id];
+        const targetRoom = socketRooms[data.uid];
+        if (!myRoom || !targetRoom || myRoom !== targetRoom) return;
         socket.to(data.uid).emit('candidate', { candidate: data.candidate, uid: socket.id });
     });
 
