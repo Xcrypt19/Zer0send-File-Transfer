@@ -106,7 +106,7 @@ app.use((req, res, next) => {
     // ─────────────────────────────────────────────────────────────────────
     res.setHeader('Content-Security-Policy', [
         "default-src 'self'",
-        "script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com",
+        "script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://socket.io",
         "style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://fonts.googleapis.com",
         "font-src 'self' https://cdnjs.cloudflare.com https://fonts.gstatic.com",
         "img-src 'self' data: blob:",
@@ -200,6 +200,14 @@ io.on('connection', (socket) => {
         }
         if (Object.keys(senders).length >= MAX_ROOMS) {
             socket.emit('error', { message: 'Server is at capacity — please try again later.' });
+            return;
+        }
+        // Prevent UID hijacking: if a sender is already registered for this room,
+        // reject the join outright. Overwriting senders[uid] would let any socket
+        // silently steal ownership of an active room and intercept all future
+        // receiver init/offer/answer/candidate traffic.
+        if (senders[data.uid]) {
+            socket.emit('error', { message: 'Room already exists — choose a different ID.' });
             return;
         }
         senders[data.uid] = socket.id;
