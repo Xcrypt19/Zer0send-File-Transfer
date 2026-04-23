@@ -41,13 +41,8 @@
     function showToast(message, type = 'info') {
         const toast = document.createElement('div');
         toast.className = `toast ${type}`;
-        // Build via DOM so neither the icon class nor the message text
-        // can inject markup — message often contains user-supplied filenames.
         const icon = document.createElement('i');
-        const iconClass = type === 'success' ? 'check-circle'
-                        : type === 'error'   ? 'exclamation-circle'
-                        : 'info-circle';
-        icon.className = `fas fa-${iconClass}`;
+        icon.className = `fas fa-${type==='success'?'check-circle':type==='error'?'exclamation-circle':'info-circle'}`;
         const span = document.createElement('span');
         span.textContent = message;
         toast.appendChild(icon);
@@ -107,10 +102,9 @@
     //
     // Architecture (per the SCTP analysis):
     //
-    //   CHUNK = 64 KB
-    //     Fits comfortably in a single SCTP message on all modern browsers.
-    //     4× larger than the previous 16 KB, meaning 4× fewer messages and
-    //     significantly lower per-message overhead on large transfers.
+    //   CHUNK = 16 KB
+    //     Fits in a single SCTP message → no fragmentation, no head-of-line
+    //     blocking inside the browser's SCTP stack.
     //
     //   Per-peer send queues (peerQueues)
     //     Each peer has its own outbound queue of packed ArrayBuffers.
@@ -122,10 +116,10 @@
     //     preventing the event-loop starvation that kills connections.
     //
     //   Per-peer back-pressure
-    //     Pause sending to a channel when bufferedAmount > BUFFER_SOFT (8 MB).
-    //     Resume via bufferedAmountLowThreshold = BUFFER_LOW (1 MB).
+    //     Pause sending to a channel when bufferedAmount > BUFFER_SOFT (2 MB).
+    //     Resume via bufferedAmountLowThreshold = BUFFER_LOW (256 KB).
     //
-    //   Global read cap (MAX_GLOBAL_READS = 8)
+    //   Global read cap (MAX_GLOBAL_READS = 4)
     //     Prevents memory exhaustion when many files are dropped at once.
     //
     //   Binary chunk header (24 bytes)
@@ -133,15 +127,12 @@
     //     The receiver parses the header to route chunks to the correct
     //     download by fileId, fixing multi-file interleave corruption.
     //
-    const CHUNK            = 65536;    // 64 KB — safe SCTP message size on all modern browsers;
-                                       // 4x fewer messages vs 16 KB = significantly lower overhead
-    const QUEUE_DEPTH      = 64;       // pre-read chunks per file (64 x 64 KB = 4 MB read-ahead);
-                                       // keeps the I/O pipeline full so the send loop never stalls
-                                       // waiting for the next disk read to complete
-    const BUFFER_SOFT      = 8388608;  // 8 MB — stop sending to a channel above this
-    const BUFFER_LOW       = 1048576;  // 1 MB — resume threshold (was 256 KB)
-    const MAX_GLOBAL_READS = 8;        // max concurrent file reads across all transfers (was 4)
-    const HEADER_LEN       = 24;       // bytes reserved for ASCII fileId header (unchanged)
+    const CHUNK            = 16384;    // 16 KB — one SCTP message, no fragmentation
+    const QUEUE_DEPTH      = 8;        // pre-read chunks per file (8 × 16 KB = 128 KB)
+    const BUFFER_SOFT      = 2097152;  // 2 MB — stop sending to a channel above this
+    const BUFFER_LOW       = 262144;   // 256 KB — resume threshold
+    const MAX_GLOBAL_READS = 4;        // max concurrent file reads across all transfers
+    const HEADER_LEN       = 24;       // bytes reserved for ASCII fileId header
 
     // Per-peer outbound queues: socketId → ArrayBuffer[]
     const peerQueues = new Map();
@@ -284,34 +275,17 @@
         if (!list || document.getElementById('user-row-' + socketId)) return;
         const msg = document.getElementById('no-users-msg');
         if (msg) msg.style.display = 'none';
-
         const row = document.createElement('div');
         row.className = 'user-row';
         row.id = 'user-row-' + socketId;
-
-        // Build the row via DOM — never via innerHTML — so neither the alias nor
-        // the socketId can break out of their text context and inject markup or JS.
-        const info = document.createElement('div');
-        info.className = 'user-row-info';
-        const dot = document.createElement('span');
-        dot.className = 'user-dot';
-        const aliasSpan = document.createElement('span');
-        aliasSpan.className = 'user-alias';
-        aliasSpan.textContent = alias;
-        info.appendChild(dot);
-        info.appendChild(aliasSpan);
-
-        const btn = document.createElement('button');
-        btn.className = 'kick-btn';
-        // Store the ID in a data attribute — never interpolated into JS string context.
-        btn.dataset.socketId = socketId;
-        btn.innerHTML = '<i class="fas fa-user-slash"></i> Kick';
-        btn.addEventListener('click', function() {
-            window.kickReceiver(this.dataset.socketId);
-        });
-
-        row.appendChild(info);
-        row.appendChild(btn);
+        row.innerHTML = `
+            <div class="user-row-info">
+                <span class="user-dot"></span>
+                <span class="user-alias">${escapeHtml(alias)}</span>
+            </div>
+            <button class="kick-btn" onclick="kickReceiver('${escapeHtml(socketId)}')">
+                <i class="fas fa-user-slash"></i> Kick
+            </button>`;
         list.appendChild(row);
     }
     function removeUserRow(socketId) {
@@ -396,9 +370,9 @@
                     ctx.fillText(bit, i * 18, drops[i] * 18);
                     ctx.globalAlpha = 1;
                     if (drops[i] * 18 > canvas.height && Math.random() > 0.96) drops[i] = 0;
-                    drops[i] += 0.13 + Math.random() * 0.15;
+                    drops[i] += 0.3 + Math.random() * 0.35;
                 }
-            }, 100);
+            }, 60);
         }));
         let t = 0, progress = 0, lastMsg = '';
         _pulseInterval = setInterval(() => {
@@ -482,73 +456,34 @@
     });
 
     // ── Create Room ────────────────────────────────────────────
-    // pendingJoin tracks an in-flight sender-join so the error handler knows
-    // whether a "Room already exists" error belongs to us and should be retried,
-    // or is a stray server error that should just be shown as a toast.
-    let pendingJoin = null;  // { uid, expiryMs, expiryLabel, attempt } | null
-
-    function doSenderJoin(uid, expiryMs_, expiryLabel, attempt) {
-        pendingJoin = { uid, expiryMs: expiryMs_, expiryLabel, attempt };
-
-        // Render the Room ID block via DOM so the ID is never treated as markup.
-        const joinIdEl = document.querySelector('#join-id');
-        joinIdEl.innerHTML = '';
-        const label = document.createElement('b');
-        label.innerHTML = '<i class="fas fa-key"></i> Room ID';
-        const idSpan = document.createElement('span');
-        idSpan.textContent = uid;
-        idSpan.addEventListener('click', () => copyToClipboard(idSpan.textContent));
-        const hint = document.createElement('p');
-        hint.style.cssText = 'color:var(--text-secondary);font-size:0.75rem;margin-top:0.5rem;';
-        hint.innerHTML = '<i class="fas fa-copy"></i> Click to copy';
-        joinIdEl.appendChild(label);
-        joinIdEl.appendChild(idSpan);
-        joinIdEl.appendChild(hint);
-
-        const eb = document.getElementById('expiry-badge');
-        if (eb) { eb.style.display = 'flex'; document.getElementById('expiry-label').textContent = `Self-destructs in ${expiryLabel}`; }
-
-        socket.emit("sender-join", { uid, masterKey: passphrase, expiryMs: expiryMs_ });
-
-        const si = document.querySelector('.status-indicator');
-        if (si) { si.classList.remove('connected','disconnected'); si.classList.add('waiting'); }
-    }
-
     document.querySelector("#sender-start-con-btn").addEventListener("click", function() {
+        const joinID = generateID();
+        currentRoomUID = joinID;
         const ec = document.querySelector('input[name="expiry"]:checked');
         const eh = ec ? parseInt(ec.value) : 24;
-        const ms = Date.now() + eh * 3600000;
+        expiryMs = Date.now() + eh * 3600000;
         const el = eh === 1 ? '1 hour' : eh === 24 ? '24 hours' : '7 days';
-        const uid = generateID();
-        currentRoomUID = uid;
-        expiryMs = ms;
-        doSenderJoin(uid, ms, el, 1);
+        // Build the room ID display using DOM API instead of innerHTML so the
+        // joinID value is always inserted as plain text, never interpreted as HTML.
+        const joinEl = document.querySelector('#join-id');
+        joinEl.textContent = '';
+        const lbl = document.createElement('b');
+        lbl.innerHTML = '<i class="fas fa-key" aria-hidden="true"></i> Room ID';
+        const idSpan = document.createElement('span');
+        idSpan.textContent = joinID;               // safe — textContent only
+        idSpan.onclick = () => copyToClipboard(idSpan.textContent);
+        const hint = document.createElement('p');
+        hint.style.cssText = 'color:var(--text-secondary);font-size:0.75rem;margin-top:0.5rem;';
+        hint.innerHTML = '<i class="fas fa-copy" aria-hidden="true"></i> Click to copy';
+        joinEl.appendChild(lbl);
+        joinEl.appendChild(idSpan);
+        joinEl.appendChild(hint);
+        const eb = document.getElementById('expiry-badge');
+        if (eb) { eb.style.display = 'flex'; document.getElementById('expiry-label').textContent = `Self-destructs in ${el}`; }
+        socket.emit("sender-join", { uid: joinID, masterKey: passphrase, expiryMs });
         showToast(`Room created! Expires in ${el}.${passphrase ? ' Passphrase auth enabled.' : ''}`, 'success');
-    });
-
-    // ── Socket error handler ───────────────────────────────────
-    // "Room already exists" means the randomly-generated UID collided with a live
-    // room. Since the space is 900^3 ≈ 729 M this is vanishingly rare, but when it
-    // does happen we regenerate the UID and retry transparently (up to 5 times).
-    // All other server errors are surfaced as a toast.
-    socket.on('error', function(data) {
-        const msg = (data && data.message) || 'An error occurred.';
-        if (msg === 'Room already exists — choose a different ID.' && pendingJoin && pendingJoin.attempt < 5) {
-            const next = generateID();
-            currentRoomUID = next;
-            expiryMs = pendingJoin.expiryMs;
-            doSenderJoin(next, pendingJoin.expiryMs, pendingJoin.expiryLabel, pendingJoin.attempt + 1);
-        } else {
-            pendingJoin = null;
-            showToast(msg, 'error');
-        }
-    });
-
-    // Clear pendingJoin once the server confirms a successful join (first init arrives)
-    // so stray late errors don't accidentally trigger a retry.
-    socket.on("init", function clearPendingOnFirstInit() {
-        pendingJoin = null;
-        socket.off("init", clearPendingOnFirstInit); // one-shot: hand off to the real handler below
+        const si = document.querySelector('.status-indicator');
+        if (si) { si.classList.remove('connected','disconnected'); si.classList.add('waiting'); }
     });
     window.copyToClipboard = text => navigator.clipboard.writeText(text).then(() => showToast('Copied!', 'success'));
 
@@ -575,8 +510,7 @@
 
         dc.onmessage = function(event) {
             if (typeof event.data === 'string') {
-                let msg;
-                try { msg = JSON.parse(event.data); } catch(e) { return; }
+                const msg = JSON.parse(event.data);
                 if (msg.type === 'chat') {
                     // Use the alias the receiver chose; fall back to a short socket tag
                     const alias  = msg.alias && msg.alias !== 'Receiver'
@@ -738,26 +672,15 @@
         });
     }
 
-    // Global set of fillQueue callbacks waiting for a free read slot.
-    // When any read completes and globalActiveReads drops, we drain this.
-    const pendingFillQueues = new Set();
-
-    function onReadSlotFreed() {
-        if (pendingFillQueues.size === 0) return;
-        const toRun = Array.from(pendingFillQueues);
-        pendingFillQueues.clear();
-        toRun.forEach(fn => fn());
-    }
-
     // ── sendFile — 16 KB chunks, per-peer queues, rAF flush ────
     function sendFile(file, relativePath) {
         const fileId      = Date.now() + '-' + Math.floor(Math.random() * 1e9);
         const displayName = relativePath || file.name;
 
-        let readAhead      = 0;
-        let sentBytes      = 0;
-        let localQueue     = [];
-        let activeReads    = 0;
+        let readAhead      = 0;   // byte offset: next slice to schedule for reading
+        let sentBytes      = 0;   // byte offset: data enqueued to peer queues
+        let localQueue     = [];  // pre-read ArrayBuffers ready to enqueue
+        let activeReads    = 0;   // in-flight Blob.arrayBuffer() calls for THIS file
         let isCancelled    = false;
         const startTime    = Date.now();
 
@@ -790,7 +713,6 @@
 
         row.querySelector('.remove-file-btn').addEventListener('click', function() {
             isCancelled = true;
-            pendingFillQueues.delete(fillQueue);
             broadcastControl({ type: 'remove-file', fileId });
             row.style.transition = 'opacity 0.25s, transform 0.25s';
             row.style.opacity    = '0';
@@ -806,48 +728,11 @@
             rafPending = true;
             requestAnimationFrame(() => {
                 rafPending = false;
-                const pct = file.size > 0 ? Math.min(Math.round((sentBytes / file.size) * 100), 100) : 100;
+                const pct = file.size > 0 ? Math.min(Math.round((sentBytes / file.size) * 100), 100) : 0;
                 row.style.setProperty('--pct', pct + '%');
                 const el = row.querySelector('.file-card-pct');
                 if (el) el.textContent = pct + '%';
             });
-        }
-
-        // ── Mark this file complete and notify receivers ───────
-        function finishFile() {
-            const dur = Math.max((Date.now() - startTime) / 1000, 0.001);
-            const spd = file.size > 0 ? (file.size / dur / 1048576).toFixed(2) : '0.00';
-
-            // IMPORTANT: do NOT use broadcastControl() here.
-            // broadcastControl calls dataChannel.send() synchronously, which writes
-            // 'done' straight to the SCTP stack. At this point the binary chunks for
-            // this file are still sitting in peerQueues waiting for the next rAF flush.
-            // SCTP would deliver 'done' first, the receiver would assemble a truncated
-            // blob, and the final chunks would arrive as orphaned data for an unknown
-            // fileId.  Enqueuing 'done' into peerQueues keeps it strictly ordered
-            // behind all binary chunks — flush() calls dc.send() for both strings and
-            // ArrayBuffers, so no other change is needed in the flush loop.
-            const doneMsg = JSON.stringify({ type: 'done', fileId });
-            peers.forEach(({ dataChannel }, socketId) => {
-                if (!dataChannel || dataChannel.readyState !== 'open') return;
-                if (!peerQueues.has(socketId)) peerQueues.set(socketId, []);
-                peerQueues.get(socketId).push(doneMsg);
-            });
-            scheduleFlush();
-
-            row.style.setProperty('--pct', '100%');
-            row.classList.add('send-complete');
-            const el = row.querySelector('.file-card-pct');
-            if (el) el.textContent = '✓';
-            showToast(`${file.name} sent — ${spd} MB/s (${formatTime(dur)})`, 'success');
-        }
-
-        // ── Handle zero-byte files (common in folder structures) ─
-        // fillQueue would never start since readAhead(0) < file.size(0) is false,
-        // so the 'done' message would never be sent and the receiver stalls at 0%.
-        if (file.size === 0) {
-            finishFile();
-            return;
         }
 
         // ── Enqueue all pre-read chunks to peer queues ─────────
@@ -855,6 +740,7 @@
             if (isCancelled) return;
 
             while (localQueue.length > 0) {
+                // If peer queues are saturated, pause reads and register a resume
                 if (allPeersSaturated()) {
                     pendingResumes.add(flushLocalQueue);
                     return;
@@ -866,17 +752,27 @@
                 scheduleRefreshUI();
             }
 
+            // Check for completion
             if (activeReads === 0 && localQueue.length === 0 && sentBytes >= file.size) {
-                finishFile();
+                const dur = Math.max((Date.now() - startTime) / 1000, 0.001);
+                const spd = (file.size / dur / 1048576).toFixed(2);
+                // Completion message goes AFTER all data is queued — the flush
+                // loop will drain it in order since each peer has its own queue
+                broadcastControl({ type: 'done', fileId });
+                row.style.setProperty('--pct', '100%');
+                row.classList.add('send-complete');
+                const el = row.querySelector('.file-card-pct');
+                if (el) el.textContent = '✓';
+                showToast(`${file.name} sent — ${spd} MB/s (${formatTime(dur)})`, 'success');
             } else {
-                fillQueue();
+                fillQueue(); // keep the read pipeline ahead of the send position
             }
         }
 
         // ── Read ahead: overlap disk I/O with network sends ────
         function fillQueue() {
-            if (isCancelled) return;
             while (
+                !isCancelled &&
                 globalActiveReads < MAX_GLOBAL_READS &&
                 activeReads + localQueue.length < QUEUE_DEPTH &&
                 readAhead < file.size
@@ -891,25 +787,11 @@
                     .then(buf => {
                         activeReads--;
                         globalActiveReads--;
-                        if (isCancelled) { onReadSlotFreed(); return; }
+                        if (isCancelled) return;
                         localQueue.push(buf);
-                        onReadSlotFreed(); // wake any files waiting for a read slot
                         flushLocalQueue();
                     })
-                    .catch(() => {
-                        activeReads--;
-                        globalActiveReads--;
-                        onReadSlotFreed();
-                        showToast(`Read error on "${file.name}"`, 'error');
-                    });
-            }
-
-            // If we couldn't start any reads because the global cap is full,
-            // register this file's fillQueue to be retried when a slot frees up.
-            if (!isCancelled && readAhead < file.size &&
-                globalActiveReads >= MAX_GLOBAL_READS &&
-                activeReads + localQueue.length < QUEUE_DEPTH) {
-                pendingFillQueues.add(fillQueue);
+                    .catch(() => showToast(`Read error on "${file.name}"`, 'error'));
             }
         }
 
