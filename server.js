@@ -202,11 +202,13 @@ io.on('connection', (socket) => {
             socket.emit('error', { message: 'Server is at capacity — please try again later.' });
             return;
         }
-        // Prevent UID hijacking: if a sender is already registered for this room,
-        // reject the join outright. Overwriting senders[uid] would let any socket
-        // silently steal ownership of an active room and intercept all future
-        // receiver init/offer/answer/candidate traffic.
-        if (senders[data.uid]) {
+        // Prevent UID hijacking: reject only if another *live* socket already owns this room.
+        // We gate on io.sockets.sockets.get() rather than a bare senders[uid] check to
+        // handle the race where the old sender socket disconnected but the disconnect event
+        // hasn't fired yet — in that case the entry is stale and we allow the rejoin.
+        // This also means a legitimate sender whose socket auto-reconnected (new socket.id,
+        // same uid) can reclaim their own room without being falsely blocked.
+        if (senders[data.uid] && io.sockets.sockets.get(senders[data.uid])) {
             socket.emit('error', { message: 'Room already exists — choose a different ID.' });
             return;
         }

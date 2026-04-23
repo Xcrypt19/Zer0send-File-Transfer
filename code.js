@@ -482,20 +482,21 @@
     });
 
     // ── Create Room ────────────────────────────────────────────
-    document.querySelector("#sender-start-con-btn").addEventListener("click", function() {
-        const joinID = generateID();
-        currentRoomUID = joinID;
-        const ec = document.querySelector('input[name="expiry"]:checked');
-        const eh = ec ? parseInt(ec.value) : 24;
-        expiryMs = Date.now() + eh * 3600000;
-        const el = eh === 1 ? '1 hour' : eh === 24 ? '24 hours' : '7 days';
-        // Build the Room ID block via DOM so the ID is never treated as markup.
+    // pendingJoin tracks an in-flight sender-join so the error handler knows
+    // whether a "Room already exists" error belongs to us and should be retried,
+    // or is a stray server error that should just be shown as a toast.
+    let pendingJoin = null;  // { uid, expiryMs, expiryLabel, attempt } | null
+
+    function doSenderJoin(uid, expiryMs_, expiryLabel, attempt) {
+        pendingJoin = { uid, expiryMs: expiryMs_, expiryLabel, attempt };
+
+        // Render the Room ID block via DOM so the ID is never treated as markup.
         const joinIdEl = document.querySelector('#join-id');
         joinIdEl.innerHTML = '';
         const label = document.createElement('b');
         label.innerHTML = '<i class="fas fa-key"></i> Room ID';
         const idSpan = document.createElement('span');
-        idSpan.textContent = joinID;
+        idSpan.textContent = uid;
         idSpan.addEventListener('click', () => copyToClipboard(idSpan.textContent));
         const hint = document.createElement('p');
         hint.style.cssText = 'color:var(--text-secondary);font-size:0.75rem;margin-top:0.5rem;';
@@ -503,12 +504,51 @@
         joinIdEl.appendChild(label);
         joinIdEl.appendChild(idSpan);
         joinIdEl.appendChild(hint);
+
         const eb = document.getElementById('expiry-badge');
-        if (eb) { eb.style.display = 'flex'; document.getElementById('expiry-label').textContent = `Self-destructs in ${el}`; }
-        socket.emit("sender-join", { uid: joinID, masterKey: passphrase, expiryMs });
-        showToast(`Room created! Expires in ${el}.${passphrase ? ' Passphrase auth enabled.' : ''}`, 'success');
+        if (eb) { eb.style.display = 'flex'; document.getElementById('expiry-label').textContent = `Self-destructs in ${expiryLabel}`; }
+
+        socket.emit("sender-join", { uid, masterKey: passphrase, expiryMs: expiryMs_ });
+
         const si = document.querySelector('.status-indicator');
         if (si) { si.classList.remove('connected','disconnected'); si.classList.add('waiting'); }
+    }
+
+    document.querySelector("#sender-start-con-btn").addEventListener("click", function() {
+        const ec = document.querySelector('input[name="expiry"]:checked');
+        const eh = ec ? parseInt(ec.value) : 24;
+        const ms = Date.now() + eh * 3600000;
+        const el = eh === 1 ? '1 hour' : eh === 24 ? '24 hours' : '7 days';
+        const uid = generateID();
+        currentRoomUID = uid;
+        expiryMs = ms;
+        doSenderJoin(uid, ms, el, 1);
+        showToast(`Room created! Expires in ${el}.${passphrase ? ' Passphrase auth enabled.' : ''}`, 'success');
+    });
+
+    // ── Socket error handler ───────────────────────────────────
+    // "Room already exists" means the randomly-generated UID collided with a live
+    // room. Since the space is 900^3 ≈ 729 M this is vanishingly rare, but when it
+    // does happen we regenerate the UID and retry transparently (up to 5 times).
+    // All other server errors are surfaced as a toast.
+    socket.on('error', function(data) {
+        const msg = (data && data.message) || 'An error occurred.';
+        if (msg === 'Room already exists — choose a different ID.' && pendingJoin && pendingJoin.attempt < 5) {
+            const next = generateID();
+            currentRoomUID = next;
+            expiryMs = pendingJoin.expiryMs;
+            doSenderJoin(next, pendingJoin.expiryMs, pendingJoin.expiryLabel, pendingJoin.attempt + 1);
+        } else {
+            pendingJoin = null;
+            showToast(msg, 'error');
+        }
+    });
+
+    // Clear pendingJoin once the server confirms a successful join (first init arrives)
+    // so stray late errors don't accidentally trigger a retry.
+    socket.on("init", function clearPendingOnFirstInit() {
+        pendingJoin = null;
+        socket.off("init", clearPendingOnFirstInit); // one-shot: hand off to the real handler below
     });
     window.copyToClipboard = text => navigator.clipboard.writeText(text).then(() => showToast('Copied!', 'success'));
 
