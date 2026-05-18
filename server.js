@@ -7,7 +7,12 @@ app.disable('x-powered-by');
 
 // Lock signalling to the production origin.
 // Set ALLOWED_ORIGIN env var to override for local dev (e.g. http://localhost:3000).
-const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || 'https://zer0send.onrender.com';
+// In dev, allow localhost origins so Socket.io connections work when testing locally.
+const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || (
+    process.env.RENDER === 'true' || process.env.NODE_ENV === 'production'
+        ? 'https://zer0send.onrender.com'
+        : ['http://localhost:3000', 'http://127.0.0.1:3000', 'http://localhost:3001', 'http://127.0.0.1:3001']
+);
 
 const io = require('socket.io')(http, {
     pingTimeout: 60000,
@@ -16,7 +21,17 @@ const io = require('socket.io')(http, {
     cors: { origin: ALLOWED_ORIGIN, methods: ['GET', 'POST'] }
 });
 const path = require('path');
+const fs   = require('fs');
 const PORT = process.env.PORT || 3000;
+
+// #region agent log
+const DEBUG_LOG = '/home/xcrypt/.cursor/debug-logs/debug-9037c6.log';
+function dbgLog(location, message, data, hypothesisId) {
+    try {
+        fs.appendFileSync(DEBUG_LOG, JSON.stringify({ sessionId: '9037c6', location, message, data, timestamp: Date.now(), hypothesisId }) + '\n');
+    } catch (_) {}
+}
+// #endregion
 
 // ── Per-socket rate limiter ────────────────────────────────────────────────
 // No external package needed — a simple fixed-window counter per socket ID.
@@ -106,7 +121,7 @@ app.use((req, res, next) => {
     // ─────────────────────────────────────────────────────────────────────
     res.setHeader('Content-Security-Policy', [
         "default-src 'self'",
-        "script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://socket.io",
+        "script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com",
         "style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://fonts.googleapis.com",
         "font-src 'self' https://cdnjs.cloudflare.com https://fonts.gstatic.com",
         "img-src 'self' data: blob:",
@@ -187,6 +202,9 @@ function broadcastReceiverList(uid) {
 }
 
 io.on('connection', (socket) => {
+    // #region agent log
+    dbgLog('server.js:connection', 'client connected', { socketId: socket.id, allowedOrigin: ALLOWED_ORIGIN }, 'A');
+    // #endregion
 
     // Sender joins ------------------------------------------------
     socket.on('sender-join', (data) => {
@@ -202,16 +220,6 @@ io.on('connection', (socket) => {
             socket.emit('error', { message: 'Server is at capacity — please try again later.' });
             return;
         }
-        // Prevent UID hijacking: reject only if another *live* socket already owns this room.
-        // We gate on io.sockets.sockets.get() rather than a bare senders[uid] check to
-        // handle the race where the old sender socket disconnected but the disconnect event
-        // hasn't fired yet — in that case the entry is stale and we allow the rejoin.
-        // This also means a legitimate sender whose socket auto-reconnected (new socket.id,
-        // same uid) can reclaim their own room without being falsely blocked.
-        if (senders[data.uid] && io.sockets.sockets.get(senders[data.uid])) {
-            socket.emit('error', { message: 'Room already exists — choose a different ID.' });
-            return;
-        }
         senders[data.uid] = socket.id;
         socketRooms[socket.id] = data.uid;
         roomReceivers[data.uid] = roomReceivers[data.uid] || new Map();
@@ -220,16 +228,28 @@ io.on('connection', (socket) => {
 
     // Receiver joins ----------------------------------------------
     socket.on('receiver-join', (data) => {
+        // #region agent log
+        dbgLog('server.js:receiver-join', 'receiver-join received', { socketId: socket.id, uid: data?.uid, alias: data?.alias, senderExists: !!(data?.uid && senders[data.uid]), knownSenders: Object.keys(senders).length }, 'C,D');
+        // #endregion
         if (!rl.receiverJoin(socket.id)) {
+            // #region agent log
+            dbgLog('server.js:receiver-join', 'rate limited', { socketId: socket.id }, 'E');
+            // #endregion
             socket.emit('error', { message: 'Too many join attempts — please slow down.' });
             return;
         }
         if (!data || typeof data.uid !== 'string' || !/^\d{3}-\d{3}-\d{3}$/.test(data.uid)) {
+            // #region agent log
+            dbgLog('server.js:receiver-join', 'invalid uid format', { uid: data?.uid, uidType: typeof data?.uid }, 'C');
+            // #endregion
             socket.emit('error', { message: 'Invalid room ID format.' });
             return;
         }
         const senderSocketId = senders[data.uid];
         if (!senderSocketId) {
+            // #region agent log
+            dbgLog('server.js:receiver-join', 'no sender for uid', { uid: data.uid, senders: Object.keys(senders) }, 'D');
+            // #endregion
             socket.emit('error', { message: 'Invalid room ID — no sender found.' });
             return;
         }
@@ -251,6 +271,9 @@ io.on('connection', (socket) => {
         io.to(senderSocketId).emit('init', socket.id);
         // Push updated list to sender
         broadcastReceiverList(data.uid);
+        // #region agent log
+        dbgLog('server.js:receiver-join', 'join success', { receiverSocketId: socket.id, senderSocketId, uid: data.uid }, 'D');
+        // #endregion
     });
 
     // WebRTC signalling -------------------------------------------

@@ -1,5 +1,31 @@
 (function(){
+    // #region agent log
+    const _dbg = (location, message, data, hypothesisId) => fetch('http://127.0.0.1:7852/ingest/4d3e5faf-9a6e-4be3-8d30-42ab4051203f',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'9037c6'},body:JSON.stringify({sessionId:'9037c6',location,message,data,timestamp:Date.now(),hypothesisId})}).catch(()=>{});
+    _dbg('receiver.js:boot', 'receiver.js started', { ioDefined: typeof io !== 'undefined', href: location.href, protocol: location.protocol }, 'F');
+    // #endregion
+
+    if (typeof io === 'undefined') {
+        // #region agent log
+        _dbg('receiver.js:io-missing', 'socket.io failed to load — aborting init', { href: location.href, protocol: location.protocol }, 'F');
+        // #endregion
+        document.addEventListener('DOMContentLoaded', function() {
+            const container = document.getElementById('toast-container');
+            if (!container) return;
+            const toast = document.createElement('div');
+            toast.className = 'toast error';
+            toast.innerHTML = '<i class="fas fa-exclamation-circle"></i><span>Scripts failed to load. Open via the server at <b>/receiver</b> (e.g. http://localhost:3000/receiver) — do not open the HTML file directly.</span>';
+            container.appendChild(toast);
+        });
+        return;
+    }
+
     const socket = io();
+
+    // #region agent log
+    socket.on('connect', () => _dbg('receiver.js:connect', 'socket connected', { socketId: socket.id, connected: socket.connected }, 'A'));
+    socket.on('connect_error', (err) => _dbg('receiver.js:connect_error', 'socket connect failed', { message: err?.message, type: err?.type }, 'A'));
+    socket.on('disconnect', (reason) => _dbg('receiver.js:disconnect', 'socket disconnected', { reason }, 'B'));
+    // #endregion
     let peerConnection;
     let activeDownloads = new Map();
     let fileCount = 0;
@@ -162,17 +188,36 @@
     // myAlias is stored at module scope so sendChatMessage can use it
     let myAlias = '';
 
-    document.querySelector("#receiver-start-con-btn").addEventListener("click", function(){
-        const joinID = document.querySelector("#join-id").value.trim();
-        if (!joinID.length) { showToast('Please enter a Room ID', 'error'); return; }
-        const aliasInput = document.querySelector("#receiver-alias");
-        myAlias = (aliasInput && aliasInput.value.trim()) || '';
-        socket.emit("receiver-join", { uid: joinID, alias: myAlias });
-        showToast('Connecting to room…', 'info');
-    });
+    function wireReceiverUI() {
+        const connectBtn = document.querySelector("#receiver-start-con-btn");
+        // #region agent log
+        _dbg('receiver.js:wireUI', 'wiring receiver UI', { connectBtnFound: !!connectBtn }, 'F,G');
+        // #endregion
+        if (!connectBtn) return;
+        connectBtn.addEventListener("click", function(){
+            const joinID = document.querySelector("#join-id").value.trim();
+            if (!joinID.length) { showToast('Please enter a Room ID', 'error'); return; }
+            const aliasInput = document.querySelector("#receiver-alias");
+            myAlias = (aliasInput && aliasInput.value.trim()) || '';
+            // #region agent log
+            _dbg('receiver.js:join-click', 'receiver-join emit', { joinID, alias: myAlias, socketConnected: socket.connected, socketId: socket.id, formatOk: /^\d{3}-\d{3}-\d{3}$/.test(joinID) }, 'B,C');
+            // #endregion
+            socket.emit("receiver-join", { uid: joinID, alias: myAlias });
+            showToast('Connecting to room…', 'info');
+        });
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', wireReceiverUI);
+    } else {
+        wireReceiverUI();
+    }
 
     // ── Socket: init ───────────────────────────────────────────
     socket.on("init", function(senderSocketId){
+        // #region agent log
+        _dbg('receiver.js:init', 'init received from server', { senderSocketId }, 'D');
+        // #endregion
         showToast('Connected to sender!', 'success');
         senderSocketId_ = senderSocketId;
         document.querySelector(".join-screen").classList.remove("active");
@@ -401,57 +446,8 @@
             const el=row.querySelector('.file-card-pct');
             if(el) el.textContent=pct+'%';
         }
-        // Consolidate accumulated ArrayBuffers into a single Blob periodically to
-        // control GC pressure. Threshold scales with chunk size: ~3 MB per flush
-        // (50 x 64 KB chunks, matching the old 200 x 16 KB = 3.2 MB behaviour).
-        if (dl.chunks.length > 50) dl.chunks=[new Blob(dl.chunks,{type:dl.fileType})];
-    }
-
-    // ── Download helper ────────────────────────────────────────
-    // Handles three problem areas in the naive a.click() approach:
-    //
-    // 1. Immediate URL revocation: the original code called revokeObjectURL()
-    //    synchronously after click(). iOS Safari's download is async — the URL
-    //    is invalid before iOS can load the resource, so nothing is saved.
-    //    Fix: revoke after a 60-second delay, giving the OS time to open the file.
-    //
-    // 2. Anchor not in DOM: Firefox and some mobile browsers silently ignore
-    //    click() on elements that are not attached to the document.
-    //    Fix: append, click, then immediately remove from DOM.
-    //
-    // 3. iOS Safari <a download> support: iOS Safari ignores the `download`
-    //    attribute for most MIME types and shows a blank page or does nothing.
-    //    Fix: detect iOS and open the blob URL in a new tab instead. iOS will
-    //    display the file inline (images, PDFs) or show a Share / Save to Files
-    //    prompt, which is the closest iOS equivalent of a file download.
-    function triggerDownload(blob, fileName) {
-        const url = URL.createObjectURL(blob);
-        const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
-        if (isIOS) {
-            // window.open must be called synchronously from a user-gesture handler.
-            // It opens the blob URL in a new tab; iOS shows its native share sheet
-            // from which the user can choose Save to Files, AirDrop, Mail, etc.
-            const win = window.open(url, '_blank');
-            if (!win) {
-                // Popup was blocked (unlikely from a direct click but possible).
-                // Fall through to the anchor method as a best-effort fallback.
-                const a = document.createElement('a');
-                a.href = url; a.download = fileName; a.rel = 'noopener';
-                document.body.appendChild(a); a.click(); document.body.removeChild(a);
-            }
-            // Keep the URL alive long enough for iOS to finish loading the resource.
-            setTimeout(() => URL.revokeObjectURL(url), 60000);
-        } else {
-            const a = document.createElement('a');
-            a.href = url; a.download = fileName; a.rel = 'noopener';
-            // Must be in DOM for Firefox compatibility.
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            // Delay revocation — some browsers (especially on slower machines)
-            // process the download asynchronously after click() returns.
-            setTimeout(() => URL.revokeObjectURL(url), 30000);
-        }
+        // Consolidate small ArrayBuffers periodically to control memory
+        if (dl.chunks.length > 200) dl.chunks=[new Blob(dl.chunks,{type:dl.fileType})];
     }
 
     function completeFileReceive(fileId) {
@@ -470,7 +466,9 @@
             if(el) el.innerHTML='<i class="fas fa-arrow-down"></i>';
             row.title='Click to download';
             row.addEventListener('click',function(){
-                triggerDownload(finalBlob, dl.fileName);
+                const a=document.createElement('a');
+                a.href=URL.createObjectURL(finalBlob); a.download=dl.fileName; a.click();
+                URL.revokeObjectURL(a.href);
             });
         }
         // escapeHtml guards the file name — it's sender-controlled data
@@ -514,7 +512,9 @@
         completedFiles.forEach(({fileName,relativePath,blob})=>zip.file(relativePath||fileName,blob));
         try {
             const content=await zip.generateAsync({type:'blob',compression:'DEFLATE',compressionOptions:{level:3}});
-            triggerDownload(content, 'zer0send-files.zip');
+            const a=document.createElement('a');
+            a.href=URL.createObjectURL(content); a.download='zer0send-files.zip'; a.click();
+            URL.revokeObjectURL(a.href);
             showToast(`Downloaded ${completedFiles.size} files as ZIP!`, 'success');
         } catch(err) { showToast('ZIP error: '+err.message,'error'); }
         finally {
@@ -533,7 +533,12 @@
     socket.on("candidate", data => {
         if(peerConnection) peerConnection.addIceCandidate(data.candidate).catch(()=>{});
     });
-    socket.on("error", data => showToast(data.message||'Connection error','error'));
+    socket.on("error", data => {
+        // #region agent log
+        _dbg('receiver.js:error', 'server error event', { message: data?.message }, 'D,E');
+        // #endregion
+        showToast(data.message||'Connection error','error');
+    });
 
     // ── Room ID formatter ──────────────────────────────────────
     const joinIdInput = document.getElementById('join-id');

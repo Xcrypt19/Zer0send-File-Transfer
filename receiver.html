@@ -357,8 +357,50 @@
         </div>
     </div>
 
-    <script src="https://socket.io/socket.io.js" integrity="sha256-lKxf3iLKiUs7OnvnI9YNqS29NW7P2LNVxAtZr/Yg4iQ=" crossorigin="anonymous"></script>
-    <script src="receiver.js"></script>
+    <script>
+    // #region agent log
+    (function(){
+        var _dbg = function(loc, msg, data, hid) {
+            fetch('http://127.0.0.1:7852/ingest/4d3e5faf-9a6e-4be3-8d30-42ab4051203f',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'9037c6'},body:JSON.stringify({sessionId:'9037c6',location:loc,message:msg,data:data,timestamp:Date.now(),hypothesisId:hid})}).catch(function(){});
+        };
+        window.__rxDbg = _dbg;
+        _dbg('receiver.html:boot', 'page boot', { href: location.href, origin: location.origin, readyState: document.readyState }, 'F');
+        window.addEventListener('error', function(e) {
+            _dbg('receiver.html:onerror', 'uncaught script error', { message: e.message, filename: e.filename, lineno: e.lineno, colno: e.colno }, 'F');
+        });
+
+        // Load socket.io from THIS site's origin — never a bare /socket.io/ path that
+        // some browsers resolve to https://socket.io/ (confirmed 404 on Render).
+        var origin = location.origin || (location.protocol + '//' + location.host);
+        var ioSrc = origin + '/socket.io/socket.io.js';
+        _dbg('receiver.html:loader', 'loading socket.io', { ioSrc: ioSrc }, 'F');
+
+        function loadReceiver() {
+            _dbg('receiver.html:post-socketio', 'socket.io ready', { ioDefined: typeof io !== 'undefined', ioSrc: ioSrc }, 'F');
+            var r = document.createElement('script');
+            r.src = 'receiver.js';
+            r.onerror = function() { _dbg('receiver.html:receiver-error', 'receiver.js load failed', {}, 'F'); };
+            document.body.appendChild(r);
+        }
+
+        var s = document.createElement('script');
+        s.src = ioSrc;
+        s.onload = loadReceiver;
+        s.onerror = function() {
+            _dbg('receiver.html:socketio-error', 'socket.io load failed', { ioSrc: ioSrc }, 'F');
+            document.addEventListener('DOMContentLoaded', function() {
+                var t = document.getElementById('toast-container');
+                if (!t) return;
+                var d = document.createElement('div');
+                d.className = 'toast error';
+                d.innerHTML = '<i class="fas fa-exclamation-circle"></i><span>Connection library failed to load. Please refresh the page.</span>';
+                t.appendChild(d);
+            });
+        };
+        document.head.appendChild(s);
+    })();
+    // #endregion
+    </script>
 
     <script>
     /* ── Background Matrix Rain ───────────────────────────────── */
