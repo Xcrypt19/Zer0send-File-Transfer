@@ -541,9 +541,9 @@
                 </div>
 
                 <!-- ── Passphrase Accordion (optional second auth factor) ── -->
-                <div id="master-key-panel" class="mk-accordion" id="mk-accordion">
+                <div id="master-key-panel" class="mk-accordion">
                   <!-- Toggle header -->
-                  <button class="mk-toggle" id="mk-toggle-btn" onclick="togglePassphrase()">
+                  <button class="mk-toggle" id="mk-toggle-btn">
                     <i class="fas fa-lock"></i>
                     <span>Add Passphrase</span>
                     <span class="mk-optional-tag">OPTIONAL</span>
@@ -562,10 +562,10 @@
                       spellcheck="false"
                     >
                     <div class="mk-row">
-                      <button class="mk-apply-btn" id="mk-apply-btn" onclick="applyPassphrase()">
+                      <button class="mk-apply-btn" id="mk-apply-btn">
                         <i class="fas fa-check"></i> Apply
                       </button>
-                      <button class="mk-clear-btn" id="mk-clear-btn" onclick="clearPassphrase()">
+                      <button class="mk-clear-btn" id="mk-clear-btn">
                         <i class="fas fa-times"></i> Clear
                       </button>
                     </div>
@@ -734,7 +734,7 @@
     <!-- Toast Notifications -->
     <div id="toast-container"></div>
 
-    <script src="https://socket.io/socket.io.js" integrity="sha256-lKxf3iLKiUs7OnvnI9YNqS29NW7P2LNVxAtZr/Yg4iQ=" crossorigin="anonymous"></script>
+    <script src="/socket.io/socket.io.js"></script>
     <script type="text/javascript" src="code.js"></script>
     <script>
     /* ── Background Matrix Rain ───────────────────────────────── */

@@ -33,16 +33,30 @@
     };
 
     function generateID() {
-        const seg = () => Math.floor(Math.random() * 900) + 100;
-        return `${seg()}-${seg()}-${seg()}`;
+        // crypto.getRandomValues produces cryptographically unpredictable values,
+        // making Room IDs non-enumerable by an attacker.
+        // Math.random() is seeded from a predictable source and must never be used
+        // for anything security-sensitive like room access tokens.
+        const arr = new Uint32Array(3);
+        crypto.getRandomValues(arr);
+        // Map each 32-bit value into the range [100, 999] so every segment is
+        // exactly 3 digits — satisfying the server's /^\d{3}-\d{3}-\d{3}$/ regex
+        // without needing padStart().
+        const seg = n => String(100 + (n % 900));
+        return `${seg(arr[0])}-${seg(arr[1])}-${seg(arr[2])}`;
     }
 
     // ── Toast ──────────────────────────────────────────────────
     function showToast(message, type = 'info') {
         const toast = document.createElement('div');
         toast.className = `toast ${type}`;
+        // Build via DOM so neither the icon class nor the message text
+        // can inject markup — message often contains user-supplied filenames.
         const icon = document.createElement('i');
-        icon.className = `fas fa-${type==='success'?'check-circle':type==='error'?'exclamation-circle':'info-circle'}`;
+        const iconClass = type === 'success' ? 'check-circle'
+                        : type === 'error'   ? 'exclamation-circle'
+                        : 'info-circle';
+        icon.className = `fas fa-${iconClass}`;
         const span = document.createElement('span');
         span.textContent = message;
         toast.appendChild(icon);
@@ -275,17 +289,34 @@
         if (!list || document.getElementById('user-row-' + socketId)) return;
         const msg = document.getElementById('no-users-msg');
         if (msg) msg.style.display = 'none';
+
         const row = document.createElement('div');
         row.className = 'user-row';
         row.id = 'user-row-' + socketId;
-        row.innerHTML = `
-            <div class="user-row-info">
-                <span class="user-dot"></span>
-                <span class="user-alias">${escapeHtml(alias)}</span>
-            </div>
-            <button class="kick-btn" onclick="kickReceiver('${escapeHtml(socketId)}')">
-                <i class="fas fa-user-slash"></i> Kick
-            </button>`;
+
+        // Build the row via DOM — never via innerHTML — so neither the alias nor
+        // the socketId can break out of their text context and inject markup or JS.
+        const info = document.createElement('div');
+        info.className = 'user-row-info';
+        const dot = document.createElement('span');
+        dot.className = 'user-dot';
+        const aliasSpan = document.createElement('span');
+        aliasSpan.className = 'user-alias';
+        aliasSpan.textContent = alias;
+        info.appendChild(dot);
+        info.appendChild(aliasSpan);
+
+        const btn = document.createElement('button');
+        btn.className = 'kick-btn';
+        // Store the ID in a data attribute — never interpolated into JS string context.
+        btn.dataset.socketId = socketId;
+        btn.innerHTML = '<i class="fas fa-user-slash"></i> Kick';
+        btn.addEventListener('click', function() {
+            window.kickReceiver(this.dataset.socketId);
+        });
+
+        row.appendChild(info);
+        row.appendChild(btn);
         list.appendChild(row);
     }
     function removeUserRow(socketId) {
@@ -370,9 +401,9 @@
                     ctx.fillText(bit, i * 18, drops[i] * 18);
                     ctx.globalAlpha = 1;
                     if (drops[i] * 18 > canvas.height && Math.random() > 0.96) drops[i] = 0;
-                    drops[i] += 0.3 + Math.random() * 0.35;
+                    drops[i] += 0.13 + Math.random() * 0.15;
                 }
-            }, 60);
+            }, 100);
         }));
         let t = 0, progress = 0, lastMsg = '';
         _pulseInterval = setInterval(() => {
@@ -410,7 +441,14 @@
     }
 
     // ── Passphrase Accordion ───────────────────────────────────
-    window.togglePassphrase = function() {
+    // Defined as plain private functions (not window.* globals) so they are
+    // guaranteed to be in scope when addEventListener binds them below.
+    // The old onclick="togglePassphrase()" / onclick="applyPassphrase()" /
+    // onclick="clearPassphrase()" attributes in the HTML have been removed;
+    // those relied on the global-scope lookup that can silently fail in strict
+    // environments or when the IIFE is evaluated before window.* assignments
+    // propagate to the inline-handler scope.
+    function togglePassphrase() {
         const btn  = document.getElementById('mk-toggle-btn');
         const body = document.getElementById('mk-body');
         if (!btn || !body) return;
@@ -418,8 +456,8 @@
         body.classList.toggle('open', !isOpen);
         btn.classList.toggle('open', !isOpen);
         if (!isOpen) setTimeout(() => { const i = document.getElementById('mk-input-field'); if (i) i.focus(); }, 320);
-    };
-    window.applyPassphrase = function() {
+    }
+    function applyPassphrase() {
         const inp    = document.getElementById('mk-input-field');
         const btn    = document.getElementById('mk-apply-btn');
         const status = document.getElementById('mk-status-text');
@@ -437,8 +475,8 @@
         if (accord) accord.classList.add('applied');
         if (toggle) toggle.classList.add('applied');
         setTimeout(() => { const b = document.getElementById('mk-body'); if (b) b.classList.remove('open'); if (toggle) toggle.classList.remove('open'); }, 1800);
-    };
-    window.clearPassphrase = function() {
+    }
+    function clearPassphrase() {
         passphrase = '';
         const inp    = document.getElementById('mk-input-field');
         const status = document.getElementById('mk-status-text');
@@ -449,10 +487,37 @@
         if (accord) accord.classList.remove('applied');
         if (toggle) toggle.classList.remove('applied');
         setTimeout(() => { if (status) status.textContent = ''; }, 2000);
-    };
+    }
+
+    // Wire every accordion button via addEventListener — no onclick="" in HTML needed.
     document.addEventListener('DOMContentLoaded', () => {
-        const i = document.getElementById('mk-input-field');
-        if (i) i.addEventListener('keydown', e => { if (e.key === 'Enter') window.applyPassphrase(); });
+        const toggleBtn = document.getElementById('mk-toggle-btn');
+        const applyBtn  = document.getElementById('mk-apply-btn');
+        const clearBtn  = document.getElementById('mk-clear-btn');
+        const mkInput   = document.getElementById('mk-input-field');
+        if (toggleBtn) toggleBtn.addEventListener('click', togglePassphrase);
+        if (applyBtn)  applyBtn.addEventListener('click',  applyPassphrase);
+        if (clearBtn)  clearBtn.addEventListener('click',  clearPassphrase);
+        if (mkInput)   mkInput.addEventListener('keydown', e => { if (e.key === 'Enter') applyPassphrase(); });
+    });
+
+    // ── Socket: surface server errors & handle reconnection ────
+    // Without these handlers, server-side rejections of sender-join (rate limit,
+    // capacity, bad uid) are emitted but silently dropped on the client, making
+    // it look like the room was created when it wasn't.
+    socket.on('error', data => showToast(data?.message || 'Server error', 'error'));
+
+    // On any reconnect the server has already deleted the room (disconnect
+    // handler runs server-side). Re-emit sender-join so the room comes back.
+    socket.on('connect', () => {
+        if (currentRoomUID) {
+            socket.emit('sender-join', { uid: currentRoomUID, masterKey: passphrase, expiryMs });
+        }
+    });
+    socket.on('disconnect', reason => {
+        if (reason !== 'io client disconnect') {
+            showToast('Connection lost — reconnecting…', 'error');
+        }
     });
 
     // ── Create Room ────────────────────────────────────────────
@@ -463,21 +528,20 @@
         const eh = ec ? parseInt(ec.value) : 24;
         expiryMs = Date.now() + eh * 3600000;
         const el = eh === 1 ? '1 hour' : eh === 24 ? '24 hours' : '7 days';
-        // Build the room ID display using DOM API instead of innerHTML so the
-        // joinID value is always inserted as plain text, never interpreted as HTML.
-        const joinEl = document.querySelector('#join-id');
-        joinEl.textContent = '';
-        const lbl = document.createElement('b');
-        lbl.innerHTML = '<i class="fas fa-key" aria-hidden="true"></i> Room ID';
+        // Build the Room ID block via DOM so the ID is never treated as markup.
+        const joinIdEl = document.querySelector('#join-id');
+        joinIdEl.innerHTML = '';
+        const label = document.createElement('b');
+        label.innerHTML = '<i class="fas fa-key"></i> Room ID';
         const idSpan = document.createElement('span');
-        idSpan.textContent = joinID;               // safe — textContent only
-        idSpan.onclick = () => copyToClipboard(idSpan.textContent);
+        idSpan.textContent = joinID;
+        idSpan.addEventListener('click', () => copyToClipboard(idSpan.textContent));
         const hint = document.createElement('p');
         hint.style.cssText = 'color:var(--text-secondary);font-size:0.75rem;margin-top:0.5rem;';
-        hint.innerHTML = '<i class="fas fa-copy" aria-hidden="true"></i> Click to copy';
-        joinEl.appendChild(lbl);
-        joinEl.appendChild(idSpan);
-        joinEl.appendChild(hint);
+        hint.innerHTML = '<i class="fas fa-copy"></i> Click to copy';
+        joinIdEl.appendChild(label);
+        joinIdEl.appendChild(idSpan);
+        joinIdEl.appendChild(hint);
         const eb = document.getElementById('expiry-badge');
         if (eb) { eb.style.display = 'flex'; document.getElementById('expiry-label').textContent = `Self-destructs in ${el}`; }
         socket.emit("sender-join", { uid: joinID, masterKey: passphrase, expiryMs });
@@ -510,7 +574,8 @@
 
         dc.onmessage = function(event) {
             if (typeof event.data === 'string') {
-                const msg = JSON.parse(event.data);
+                let msg;
+                try { msg = JSON.parse(event.data); } catch(e) { return; }
                 if (msg.type === 'chat') {
                     // Use the alias the receiver chose; fall back to a short socket tag
                     const alias  = msg.alias && msg.alias !== 'Receiver'
@@ -672,15 +737,26 @@
         });
     }
 
+    // Global set of fillQueue callbacks waiting for a free read slot.
+    // When any read completes and globalActiveReads drops, we drain this.
+    const pendingFillQueues = new Set();
+
+    function onReadSlotFreed() {
+        if (pendingFillQueues.size === 0) return;
+        const toRun = Array.from(pendingFillQueues);
+        pendingFillQueues.clear();
+        toRun.forEach(fn => fn());
+    }
+
     // ── sendFile — 16 KB chunks, per-peer queues, rAF flush ────
     function sendFile(file, relativePath) {
         const fileId      = Date.now() + '-' + Math.floor(Math.random() * 1e9);
         const displayName = relativePath || file.name;
 
-        let readAhead      = 0;   // byte offset: next slice to schedule for reading
-        let sentBytes      = 0;   // byte offset: data enqueued to peer queues
-        let localQueue     = [];  // pre-read ArrayBuffers ready to enqueue
-        let activeReads    = 0;   // in-flight Blob.arrayBuffer() calls for THIS file
+        let readAhead      = 0;
+        let sentBytes      = 0;
+        let localQueue     = [];
+        let activeReads    = 0;
         let isCancelled    = false;
         const startTime    = Date.now();
 
@@ -713,6 +789,7 @@
 
         row.querySelector('.remove-file-btn').addEventListener('click', function() {
             isCancelled = true;
+            pendingFillQueues.delete(fillQueue);
             broadcastControl({ type: 'remove-file', fileId });
             row.style.transition = 'opacity 0.25s, transform 0.25s';
             row.style.opacity    = '0';
@@ -728,11 +805,31 @@
             rafPending = true;
             requestAnimationFrame(() => {
                 rafPending = false;
-                const pct = file.size > 0 ? Math.min(Math.round((sentBytes / file.size) * 100), 100) : 0;
+                const pct = file.size > 0 ? Math.min(Math.round((sentBytes / file.size) * 100), 100) : 100;
                 row.style.setProperty('--pct', pct + '%');
                 const el = row.querySelector('.file-card-pct');
                 if (el) el.textContent = pct + '%';
             });
+        }
+
+        // ── Mark this file complete and notify receivers ───────
+        function finishFile() {
+            const dur = Math.max((Date.now() - startTime) / 1000, 0.001);
+            const spd = file.size > 0 ? (file.size / dur / 1048576).toFixed(2) : '0.00';
+            broadcastControl({ type: 'done', fileId });
+            row.style.setProperty('--pct', '100%');
+            row.classList.add('send-complete');
+            const el = row.querySelector('.file-card-pct');
+            if (el) el.textContent = '✓';
+            showToast(`${file.name} sent — ${spd} MB/s (${formatTime(dur)})`, 'success');
+        }
+
+        // ── Handle zero-byte files (common in folder structures) ─
+        // fillQueue would never start since readAhead(0) < file.size(0) is false,
+        // so the 'done' message would never be sent and the receiver stalls at 0%.
+        if (file.size === 0) {
+            finishFile();
+            return;
         }
 
         // ── Enqueue all pre-read chunks to peer queues ─────────
@@ -740,7 +837,6 @@
             if (isCancelled) return;
 
             while (localQueue.length > 0) {
-                // If peer queues are saturated, pause reads and register a resume
                 if (allPeersSaturated()) {
                     pendingResumes.add(flushLocalQueue);
                     return;
@@ -752,27 +848,17 @@
                 scheduleRefreshUI();
             }
 
-            // Check for completion
             if (activeReads === 0 && localQueue.length === 0 && sentBytes >= file.size) {
-                const dur = Math.max((Date.now() - startTime) / 1000, 0.001);
-                const spd = (file.size / dur / 1048576).toFixed(2);
-                // Completion message goes AFTER all data is queued — the flush
-                // loop will drain it in order since each peer has its own queue
-                broadcastControl({ type: 'done', fileId });
-                row.style.setProperty('--pct', '100%');
-                row.classList.add('send-complete');
-                const el = row.querySelector('.file-card-pct');
-                if (el) el.textContent = '✓';
-                showToast(`${file.name} sent — ${spd} MB/s (${formatTime(dur)})`, 'success');
+                finishFile();
             } else {
-                fillQueue(); // keep the read pipeline ahead of the send position
+                fillQueue();
             }
         }
 
         // ── Read ahead: overlap disk I/O with network sends ────
         function fillQueue() {
+            if (isCancelled) return;
             while (
-                !isCancelled &&
                 globalActiveReads < MAX_GLOBAL_READS &&
                 activeReads + localQueue.length < QUEUE_DEPTH &&
                 readAhead < file.size
@@ -787,11 +873,25 @@
                     .then(buf => {
                         activeReads--;
                         globalActiveReads--;
-                        if (isCancelled) return;
+                        if (isCancelled) { onReadSlotFreed(); return; }
                         localQueue.push(buf);
+                        onReadSlotFreed(); // wake any files waiting for a read slot
                         flushLocalQueue();
                     })
-                    .catch(() => showToast(`Read error on "${file.name}"`, 'error'));
+                    .catch(() => {
+                        activeReads--;
+                        globalActiveReads--;
+                        onReadSlotFreed();
+                        showToast(`Read error on "${file.name}"`, 'error');
+                    });
+            }
+
+            // If we couldn't start any reads because the global cap is full,
+            // register this file's fillQueue to be retried when a slot frees up.
+            if (!isCancelled && readAhead < file.size &&
+                globalActiveReads >= MAX_GLOBAL_READS &&
+                activeReads + localQueue.length < QUEUE_DEPTH) {
+                pendingFillQueues.add(fillQueue);
             }
         }
 
