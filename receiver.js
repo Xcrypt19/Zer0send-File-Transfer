@@ -36,14 +36,64 @@
     // relying on "current file" state, which breaks when multiple files are
     // in flight simultaneously.
     const HEADER_LEN = 24;
+
+    // Merge ArrayBuffer chunks into one contiguous buffer — preserves exact bytes
+    // (unlike repeated Blob wrapping which can mishandle mixed types on some browsers).
+    function mergeChunkBuffers(chunks) {
+        let total = 0;
+        for (const c of chunks) {
+            total += c instanceof Blob ? c.size : (c.byteLength || 0);
+        }
+        const out = new Uint8Array(total);
+        let offset = 0;
+        for (const c of chunks) {
+            if (c instanceof Blob) continue; // sync path only; async path normalises first
+            const view = c instanceof ArrayBuffer ? new Uint8Array(c) : new Uint8Array(c.buffer, c.byteOffset, c.byteLength);
+            out.set(view, offset);
+            offset += view.byteLength;
+        }
+        return out.buffer;
+    }
+
     function unpackChunk(data) {
-        const view = new Uint8Array(data);
+        // Normalise to a standalone ArrayBuffer slice (never operate on a pooled view).
+        let buf = data;
+        if (ArrayBuffer.isView(data)) {
+            buf = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
+        } else if (data instanceof ArrayBuffer) {
+            buf = data.slice(0);
+        }
+        const view = new Uint8Array(buf);
         let fileId = '';
         for (let i = 0; i < HEADER_LEN; i++) {
             if (view[i] === 0) break;
             fileId += String.fromCharCode(view[i]);
         }
-        return { fileId, buffer: data.slice(HEADER_LEN) };
+        return { fileId, buffer: buf.slice(HEADER_LEN) };
+    }
+
+    // Serialise all data-channel messages so 'done' never runs before its chunks.
+    let _chunkQueue = Promise.resolve();
+    function enqueueChannelMessage(event, dataChannel) {
+        _chunkQueue = _chunkQueue.then(async () => {
+            if (typeof event.data === 'string') {
+                let msg;
+                try { msg = JSON.parse(event.data); } catch(e) { return; }
+                if      (msg.type === 'metadata')     startFileReceive(msg.data);
+                else if (msg.type === 'done')         completeFileReceive(msg.fileId);
+                else if (msg.type === 'remove-file')  removeFileItem(msg.fileId);
+                else if (msg.type === 'session-meta') handleSessionMeta(msg, dataChannel);
+                else if (msg.type === 'chat')         appendChatMessage(msg.text, 'them', msg.alias||'Sender');
+            } else {
+                let buf = event.data;
+                if (buf instanceof Blob) {
+                    buf = await buf.arrayBuffer();
+                } else if (ArrayBuffer.isView(buf)) {
+                    buf = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+                }
+                handleFileChunk(buf);
+            }
+        }).catch(() => {});
     }
 
     let _rainInterval = null;
@@ -227,24 +277,14 @@
 
         peerConnection.ondatachannel = function(event){
             const dataChannel = event.channel;
+            window._dataChannel = dataChannel;
 
-            // RTCDataChannel defaults binaryType to 'blob'. unpackChunk expects an
-            // ArrayBuffer — Uint8Array(blob) produces an empty view, causing every
-            // binary chunk to be silently dropped (images truncated, videos unplayable).
+            // Must be set before any messages arrive — default 'blob' corrupts binary
+            // media when coerced through Uint8Array (images/videos lose data).
             dataChannel.binaryType = 'arraybuffer';
 
             dataChannel.onmessage = function(event){
-                if (typeof event.data === 'string') {
-                    let msg;
-                    try { msg = JSON.parse(event.data); } catch(e) { return; }
-                    if      (msg.type === 'metadata')     startFileReceive(msg.data);
-                    else if (msg.type === 'done')         completeFileReceive(msg.fileId);
-                    else if (msg.type === 'remove-file')  removeFileItem(msg.fileId);
-                    else if (msg.type === 'session-meta') handleSessionMeta(msg, dataChannel);
-                    else if (msg.type === 'chat')         appendChatMessage(msg.text, 'them', msg.alias||'Sender');
-                } else {
-                    handleFileChunk(event.data);
-                }
+                enqueueChannelMessage(event, dataChannel);
             };
 
             dataChannel.onopen  = function(){ console.log('[zer0] data channel open'); };
@@ -255,12 +295,9 @@
                 // 'disconnected' is transient — ICE may recover. Only act on hard failures.
                 if (s === 'failed' || s === 'closed') showSenderDisconnected();
             };
-
-            window._dataChannel = dataChannel;
         };
 
         // ── Connection state: treat 'disconnected' as transient ───
-        // 'disconnected' fires when ICE temporarily loses packets (very common
         // under load). It auto-recovers most of the time. Only 'failed' or
         // 'closed' means the session is truly dead.
         peerConnection.onconnectionstatechange = function() {
@@ -446,17 +483,21 @@
             const el=row.querySelector('.file-card-pct');
             if(el) el.textContent=pct+'%';
         }
-        // Consolidate small ArrayBuffers periodically to control memory
-        if (dl.chunks.length > 200) dl.chunks=[new Blob(dl.chunks,{type:dl.fileType})];
+        // Consolidate ArrayBuffers periodically to control memory — never wrap in typed Blobs
+        if (dl.chunks.length > 200) dl.chunks = [mergeChunkBuffers(dl.chunks)];
     }
 
     function completeFileReceive(fileId) {
         const dl = activeDownloads.get(fileId);
         if (!dl) return;
         dl.completed=true;
+        if (dl.receivedBytes !== dl.fileSize) {
+            showToast(`Warning: ${dl.fileName} may be incomplete (${formatFileSize(dl.receivedBytes)} of ${formatFileSize(dl.fileSize)})`, 'error');
+        }
         const dur=Math.max((Date.now()-dl.startTime)/1000,0.001);
         const spd=(dl.fileSize/dur/1048576).toFixed(2);
-        const finalBlob=new Blob(dl.chunks,{type:dl.fileType});
+        const finalBuffer = mergeChunkBuffers(dl.chunks);
+        const finalBlob = new Blob([finalBuffer], { type: dl.fileType || 'application/octet-stream' });
         completedFiles.set(fileId,{fileName:dl.fileName,relativePath:dl.relativePath,blob:finalBlob});
         updateDownloadAllBtn();
         const row=document.getElementById('file-'+fileId);
